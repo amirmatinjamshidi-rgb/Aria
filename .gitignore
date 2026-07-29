@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+*.tsbuildinfo
+.turbo/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+coverage/
+*.log
+
+# Models / large binaries (download separately)
+models/
+*.gguf
+*.onnx
+*.pt
+*.bin
+
+# Python sidecars
+sidecars/**/.venv/
+sidecars/**/__pycache__/
+*.pyc
+
+# Simulation artifacts
+sim/**/build/
+sim/**/install/
+sim/**/log/
