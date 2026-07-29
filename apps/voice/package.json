@@ -1,0 +1,14 @@
+{
+  "name": "@aria/voice",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Aria voice pipeline — VAD, STT, TTS orchestration (Phase 2)",
+  "type": "module",
+  "scripts": {
+    "build": "node -e \"console.log('@aria/voice: Phase 2 placeholder')\"",
+    "test": "node -e \"process.exit(0)\"",
+    "typecheck": "node -e \"process.exit(0)\"",
+    "lint": "node -e \"process.exit(0)\"",
+    "clean": "node -e \"process.exit(0)\""
+  }
+}
