@@ -39,6 +39,26 @@ export const ToolCallSchema = z.object({
 });
 export type ToolCall = z.infer<typeof ToolCallSchema>;
 
+/** JSON-Schema-ish parameters object passed to LLM providers for tool calling */
+export const ToolDefinitionSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().min(1),
+  parameters: z.record(z.unknown()).default({
+    type: "object",
+    properties: {},
+  }),
+});
+export type ToolDefinition = z.infer<typeof ToolDefinitionSchema>;
+
+export const ToolResultSchema = z.object({
+  toolCallId: z.string(),
+  name: z.string(),
+  ok: z.boolean(),
+  result: z.unknown().optional(),
+  error: z.string().optional(),
+});
+export type ToolResult = z.infer<typeof ToolResultSchema>;
+
 export const LlmCompletionSchema = z.object({
   content: z.string(),
   toolCalls: z.array(ToolCallSchema).default([]),

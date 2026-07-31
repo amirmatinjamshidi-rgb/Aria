@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { LanguageCode } from "./schemas.js";
+import type { LanguageCode, ToolCall, ToolResult } from "./schemas.ts";
 import {
   ChatMessageSchema,
   DetectedObjectSchema,
@@ -8,6 +8,8 @@ import {
   LlmCompletionSchema,
   MemoryRecordSchema,
   SkillStatusSchema,
+  ToolCallSchema,
+  ToolResultSchema,
 } from "./schemas.js";
 
 /**
@@ -18,6 +20,8 @@ export const AriaEventType = {
   ConversationUserUtterance: "conversation.user_utterance",
   ConversationAssistantReply: "conversation.assistant_reply",
   ConversationLlmCompletion: "conversation.llm_completion",
+  ConversationToolCallRequested: "conversation.tool_call_requested",
+  ConversationToolCallCompleted: "conversation.tool_call_completed",
   GoalCreated: "goal.created",
   GoalCompleted: "goal.completed",
   GoalFailed: "goal.failed",
@@ -58,6 +62,26 @@ export const LlmCompletionEventSchema = z.object({
   timestamp: z.string().datetime(),
 });
 export type LlmCompletionEvent = z.infer<typeof LlmCompletionEventSchema>;
+
+export const ToolCallRequestedEventSchema = z.object({
+  type: z.literal(AriaEventType.ConversationToolCallRequested),
+  correlationId: z.string(),
+  toolCall: ToolCallSchema,
+  timestamp: z.string().datetime(),
+});
+export type ToolCallRequestedEvent = z.infer<
+  typeof ToolCallRequestedEventSchema
+>;
+
+export const ToolCallCompletedEventSchema = z.object({
+  type: z.literal(AriaEventType.ConversationToolCallCompleted),
+  correlationId: z.string(),
+  result: ToolResultSchema,
+  timestamp: z.string().datetime(),
+});
+export type ToolCallCompletedEvent = z.infer<
+  typeof ToolCallCompletedEventSchema
+>;
 
 export const GoalCreatedEventSchema = z.object({
   type: z.literal(AriaEventType.GoalCreated),
@@ -146,6 +170,8 @@ export const AriaEventSchema = z.discriminatedUnion("type", [
   UserUtteranceEventSchema,
   AssistantReplyEventSchema,
   LlmCompletionEventSchema,
+  ToolCallRequestedEventSchema,
+  ToolCallCompletedEventSchema,
   GoalCreatedEventSchema,
   GoalCompletedEventSchema,
   GoalFailedEventSchema,
@@ -190,6 +216,30 @@ export function createAssistantReply(
     correlationId,
     text,
     language,
+    timestamp: nowIso(),
+  };
+}
+
+export function createToolCallRequested(
+  toolCall: ToolCall,
+  correlationId: string,
+): ToolCallRequestedEvent {
+  return {
+    type: AriaEventType.ConversationToolCallRequested,
+    correlationId,
+    toolCall,
+    timestamp: nowIso(),
+  };
+}
+
+export function createToolCallCompleted(
+  result: ToolResult,
+  correlationId: string,
+): ToolCallCompletedEvent {
+  return {
+    type: AriaEventType.ConversationToolCallCompleted,
+    correlationId,
+    result,
     timestamp: nowIso(),
   };
 }
