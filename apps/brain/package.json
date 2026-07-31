@@ -19,6 +19,7 @@
     "clean": "rimraf dist",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
+    "chat": "tsx src/cli/chat.ts",
     "lint": "eslint src",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
