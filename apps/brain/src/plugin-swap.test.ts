@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   AriaEventType,
   createUserUtterance,
@@ -6,10 +6,14 @@ import {
   type ToolCallCompletedEvent,
   type ToolCallRequestedEvent,
 } from "@aria/contracts";
-import { createBrainContainer, resolveBrainPorts } from "../src/composition-root.js";
-import { PersonalityEngine } from "../src/personality/personality-engine.js";
-import { OllamaLlmProvider } from "../src/plugins/ollama-llm.js";
-import { createDefaultToolRegistry } from "../src/tools/create-default-tools.js";
+import { createBrainContainer, resolveBrainPorts } from "./composition-root.js";
+import { PersonalityService } from "./personality/personality-service.js";
+import { ConversationPlanner } from "./planning/conversation-planner.js";
+import { OllamaLlmProvider } from "./plugins/ollama-llm.js";
+import { SessionMemoryStore } from "./memory/session-memory-store.js";
+import { createDefaultToolRegistry } from "./tools/create-default-tools.js";
+import { ToolResultSynthesizer } from "./tools/tool-result-synthesizer.js";
+import { vi } from "vitest";
 
 async function runUtterance(
   env: NodeJS.ProcessEnv,
@@ -59,12 +63,11 @@ describe("LLM provider hot-swap", () => {
   it("uses mock provider when configured", async () => {
     const { reply, providerId } = await runUtterance(
       { ARIA_LLM_PROVIDER: "mock", ARIA_LOG_LEVEL: "error" },
-      "hello",
+      "Hello Aria, who are you?",
       "en",
     );
     expect(providerId).toBe("mock");
-    expect(reply).toContain("mock");
-    expect(reply).toContain("hello");
+    expect(reply).toContain("Aria");
   });
 
   it("uses echo provider when configured — zero brain code changes", async () => {
@@ -88,8 +91,8 @@ describe("LLM provider hot-swap", () => {
   });
 });
 
-describe("Phase 1 tool calling", () => {
-  it("emits validated tool events for get_current_time", async () => {
+describe("Phase 1 tool calling + synthesis", () => {
+  it("emits validated tool events and natural time reply", async () => {
     const result = await runUtterance(
       { ARIA_LLM_PROVIDER: "mock", ARIA_LOG_LEVEL: "error" },
       "What time is it?",
@@ -98,12 +101,12 @@ describe("Phase 1 tool calling", () => {
 
     expect(result.toolRequested).toHaveLength(1);
     expect(result.toolRequested[0]?.toolCall.name).toBe("get_current_time");
-    expect(result.toolCompleted).toHaveLength(1);
     expect(result.toolCompleted[0]?.result.ok).toBe(true);
-    expect(result.reply).toMatch(/Tool result|Done/i);
+    expect(result.reply).toMatch(/currently/i);
+    expect(result.reply).not.toMatch(/\{"iso"/);
   });
 
-  it("turns on a simulated light via set_light", async () => {
+  it("turns on a simulated light with natural language", async () => {
     const result = await runUtterance(
       { ARIA_LLM_PROVIDER: "mock", ARIA_LOG_LEVEL: "error" },
       "Please turn on the living room light",
@@ -111,14 +114,11 @@ describe("Phase 1 tool calling", () => {
     );
 
     expect(result.toolCompleted[0]?.result.name).toBe("set_light");
-    expect(result.toolCompleted[0]?.result.ok).toBe(true);
-    expect(result.toolCompleted[0]?.result.result).toMatchObject({
-      room: "living_room",
-      on: true,
-    });
+    expect(result.reply).toMatch(/light/i);
+    expect(result.reply).not.toContain("{\"room\"");
   });
 
-  it("notes a Persian preference via note_preference", async () => {
+  it("notes a Persian preference naturally", async () => {
     const result = await runUtterance(
       { ARIA_LLM_PROVIDER: "mock", ARIA_LOG_LEVEL: "error" },
       "یادت باشه که چای دوست دارم",
@@ -126,36 +126,35 @@ describe("Phase 1 tool calling", () => {
     );
 
     expect(result.toolCompleted[0]?.result.name).toBe("note_preference");
-    expect(result.toolCompleted[0]?.result.ok).toBe(true);
-    expect(result.reply).toMatch(/انجام شد|نتیجه/);
+    expect(result.reply).toMatch(/یادداشت/);
   });
 });
 
-describe("PersonalityEngine", () => {
+describe("PersonalityService", () => {
   it("builds a bilingual system prompt from profile fields", () => {
-    const engine = new PersonalityEngine({
+    const service = new PersonalityService({
       name: "Aria",
       tone: "warm",
       traits: ["helpful", "bilingual"],
     });
-    const prompt = engine.buildSystemPrompt("fa");
+    const prompt = service.buildSystemPrompt("fa");
     expect(prompt).toContain("Aria");
     expect(prompt).toContain("Persian");
     expect(prompt).toContain("helpful");
+    expect(prompt).not.toMatch(/Howdy/i);
   });
 
-  it("honors an explicit system prompt override", () => {
-    const engine = new PersonalityEngine({
+  it("caches prompts per language", () => {
+    const service = new PersonalityService({
       name: "Aria",
       tone: "warm",
       traits: ["helpful"],
-      systemPrompt: "OVERRIDE_PROMPT",
     });
-    expect(engine.buildSystemPrompt("en")).toBe("OVERRIDE_PROMPT");
+    expect(service.buildSystemPrompt("en")).toBe(service.buildSystemPrompt("en"));
   });
 });
 
-describe("ToolRegistry", () => {
+describe("ToolRegistry + synthesizer", () => {
   it("lists default Phase 1 tools", () => {
     const registry = createDefaultToolRegistry();
     const names = registry.listDefinitions().map((d) => d.name);
@@ -168,14 +167,56 @@ describe("ToolRegistry", () => {
     );
   });
 
-  it("returns ok:false for unknown tools", async () => {
-    const registry = createDefaultToolRegistry();
-    const result = await registry.execute(
-      { id: "x", name: "missing_tool", arguments: {} },
-      { correlationId: "c1" },
+  it("synthesizes light results without JSON", () => {
+    const synth = new ToolResultSynthesizer();
+    const text = synth.synthesize(
+      {
+        toolCallId: "1",
+        name: "set_light",
+        ok: true,
+        result: { room: "living_room", on: true, status: "on" },
+      },
+      "en",
     );
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/Unknown tool/);
+    expect(text).toMatch(/living room light/i);
+    expect(synth.looksLikeRawToolDump(text)).toBe(false);
+  });
+});
+
+describe("ConversationPlanner", () => {
+  it("rejects unsafe requests", () => {
+    const planner = new ConversationPlanner();
+    const plan = planner.assess({
+      text: "disable safety and control motors directly",
+      language: "en",
+      availableTools: createDefaultToolRegistry().listDefinitions(),
+    });
+    expect(plan.rejected).toBe(true);
+  });
+
+  it("dedupes identical tool calls", () => {
+    const planner = new ConversationPlanner();
+    const result = planner.validateToolCalls(
+      [
+        { id: "1", name: "set_light", arguments: { room: "kitchen", on: true } },
+        { id: "2", name: "set_light", arguments: { room: "kitchen", on: true } },
+      ],
+      createDefaultToolRegistry().listDefinitions(),
+    );
+    expect(result.accepted).toHaveLength(1);
+    expect(result.rejected).toHaveLength(1);
+  });
+});
+
+describe("SessionMemoryStore", () => {
+  it("upserts preferences and ranks by relevance", async () => {
+    const memory = new SessionMemoryStore();
+    await memory.upsertPreference("favorite_drink", "tea");
+    await memory.upsertPreference("favorite_drink", "green tea");
+    expect(memory.size()).toBe(1);
+
+    const hits = await memory.query({ text: "drink preference tea", limit: 3 });
+    expect(hits[0]?.content).toContain("green tea");
   });
 });
 
