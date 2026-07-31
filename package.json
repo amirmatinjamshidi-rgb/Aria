@@ -15,6 +15,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev --filter=@aria/brain",
+    "chat": "npm run chat -w @aria/brain",
     "lint": "turbo run lint",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",

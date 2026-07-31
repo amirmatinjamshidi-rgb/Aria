@@ -45,9 +45,12 @@ npm install
 npm run build
 npm test
 
-# Run the brain conversation demo (Phase 1)
+# Run the brain conversation demo (fixed script)
 cp .env.example .env
 npm run start -w @aria/brain
+
+# Interactive REPL chat (type your own questions)
+npm run chat -w @aria/brain
 ```
 
 Swap the LLM provider without touching brain code:
@@ -56,7 +59,7 @@ Swap the LLM provider without touching brain code:
 # ARIA_LLM_PROVIDER=mock   (default — offline + tools)
 # ARIA_LLM_PROVIDER=echo
 # ARIA_LLM_PROVIDER=ollama + ARIA_OLLAMA_MODEL=qwen3.5:latest
-npm run start -w @aria/brain
+npm run chat -w @aria/brain
 
 # Offline quality gate + latency sample (mock by default)
 npm run eval -w @aria/brain
