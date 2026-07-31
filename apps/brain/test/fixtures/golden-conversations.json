@@ -1,0 +1,37 @@
+[
+  {
+    "id": "en-intro",
+    "language": "en",
+    "user": "Hello Aria, who are you?",
+    "expectReplyIncludes": ["Aria", "mock"],
+    "expectTool": null
+  },
+  {
+    "id": "en-time",
+    "language": "en",
+    "user": "What time is it?",
+    "expectReplyIncludes": ["Tool result"],
+    "expectTool": "get_current_time"
+  },
+  {
+    "id": "en-light",
+    "language": "en",
+    "user": "Turn on the living room light",
+    "expectReplyIncludes": ["Tool result"],
+    "expectTool": "set_light"
+  },
+  {
+    "id": "fa-intro",
+    "language": "fa",
+    "user": "سلام آریا، حالت چطوره؟",
+    "expectReplyIncludes": ["آریا", "mock"],
+    "expectTool": null
+  },
+  {
+    "id": "fa-note",
+    "language": "fa",
+    "user": "translate this text to English: آرتین دیشب موقع رانندگی لاستیک ماشینش ترکید و دیشب تو خیابون خوابید",
+    "expectReplyIncludes": ["انجام شد"],
+    "expectTool": "note_preference"
+  }
+]
