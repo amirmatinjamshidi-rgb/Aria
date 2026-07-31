@@ -40,6 +40,7 @@ Ollama adapter registration without touching conversation service
 ## Phase 1 — Brain
 
 **Duration:** 8–10 weeks
+**Status:** Complete (quality stack landed 2026-07-31)
 
 ### Objectives
 Local bilingual conversation with tool calling and personality
@@ -49,6 +50,15 @@ Local bilingual conversation with tool calling and personality
 - Tool registry + structured tool-call handling
 - Personality / system-prompt engine
 - Persian + English multi-turn chat
+
+### Landed
+- `OllamaLlmProvider` + timeouts / content cleanup — ADR-0005
+- `PersonalityService` + prompt policy (provider-independent) — ADR-0006
+- `ToolResultSynthesizer` (no raw JSON to users)
+- `ConversationPlanner` (unsafe reject + tool-call validation/dedupe)
+- `SessionMemoryStore` (`IMemoryStore`) with upsert, ranking, TTL
+- Turn latency metrics + `npm run eval` / `npm run bench -w @aria/brain`
+- Golden fixtures + Phase 1 evaluation suite (mock)
 
 ### Skills
 LLM APIs, prompt engineering, tool calling
@@ -60,12 +70,15 @@ Qwen 3, Ollama or llama.cpp, Zod tool schemas
 - Coherent bilingual multi-turn chat
 - Tool calls emit validated events
 - Provider still swappable by config
+- Evaluation average score ≥ 0.7 on mock fixtures
 
 ### Testing
-Golden conversation fixtures (en/fa); tool-call schema tests
+Golden conversation fixtures (en/fa); tool-call schema tests; eval + benchmark runners
 
 ### Future expansion
 Streaming tokens; multi-agent specialist brains behind same port
+Chroma-backed memory (Phase 3); BT/GOAP planner (Phase 5)
+Live Ollama integration smoke in CI when a runner has GPU + model cached
 
 ---
 

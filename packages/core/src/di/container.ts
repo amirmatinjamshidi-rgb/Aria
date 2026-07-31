@@ -7,6 +7,10 @@ export const TOKENS = {
   TtsProvider: Symbol.for("aria.ttsProvider"),
   VisionProvider: Symbol.for("aria.visionProvider"),
   MemoryStore: Symbol.for("aria.memoryStore"),
+  Personality: Symbol.for("aria.personality"),
+  ToolRegistry: Symbol.for("aria.toolRegistry"),
+  ToolSynthesizer: Symbol.for("aria.toolSynthesizer"),
+  ConversationPlanner: Symbol.for("aria.conversationPlanner"),
 } as const;
 
 export type Token = (typeof TOKENS)[keyof typeof TOKENS];

@@ -11,15 +11,19 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "clean": "rimraf dist",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
     "lint": "eslint src",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "eval": "tsx src/cli/run-eval.ts",
+    "bench": "tsx src/cli/run-bench.ts"
   },
   "dependencies": {
     "@aria/contracts": "*",
@@ -27,6 +31,10 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@types/node": "^22.10.5",
+    "boxen": "^8.0.1",
+    "chalk": "^6.0.0",
+    "ora": "^9.4.1",
     "rimraf": "^6.0.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",

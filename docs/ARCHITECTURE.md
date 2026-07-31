@@ -4,16 +4,16 @@ Aria is a **distributed, plugin-based, local-first** software platform for a bil
 
 ## Principles
 
-| Principle | How we enforce it |
-|-----------|-------------------|
-| Modularity | One service = one responsibility; packages map to future repos |
-| Replaceability | Every model/hardware driver sits behind a port + plugin adapter |
-| Clean / Hexagonal | Domain logic depends inward on interfaces; adapters at edges |
-| SOLID + DI | Constructor injection; composition roots only wire concretes |
-| Event-driven | Services talk only via `IMessageBus` + the event catalog |
-| Local-first | Inference on-device; cloud adapters optional and off by default |
-| Safety | Brain never controls motors; `robot-api` + safety monitor own actuators |
-| Offline | Graceful degradation ladder down to safe stop |
+| Principle         | How we enforce it                                                       |
+| ----------------- | ----------------------------------------------------------------------- |
+| Modularity        | One service = one responsibility; packages map to future repos          |
+| Replaceability    | Every model/hardware driver sits behind a port + plugin adapter         |
+| Clean / Hexagonal | Domain logic depends inward on interfaces; adapters at edges            |
+| SOLID + DI        | Constructor injection; composition roots only wire concretes            |
+| Event-driven      | Services talk only via `IMessageBus` + the event catalog                |
+| Local-first       | Inference on-device; cloud adapters optional and off by default         |
+| Safety            | Brain never controls motors; `robot-api` + safety monitor own actuators |
+| Offline           | Graceful degradation ladder down to safe stop                           |
 
 ## Topology
 
@@ -54,21 +54,21 @@ flowchart TB
 
 ## Package map
 
-| Path | Role |
-|------|------|
-| [`packages/contracts`](../packages/contracts) | Ports, Zod schemas, event catalog (**sacred**) |
-| [`packages/core`](../packages/core) | DI, bus adapters, config, logging, plugin registry |
-| [`apps/brain`](../apps/brain) | LLM orchestration, personality, tool calling |
-| [`apps/voice`](../apps/voice) | Voice pipeline orchestration |
-| [`apps/memory`](../apps/memory) | ChromaDB / RAG / preferences |
-| [`apps/vision`](../apps/vision) | Perception + world model |
-| [`apps/planner`](../apps/planner) | Goals → action graphs |
-| [`apps/smart-home`](../apps/smart-home) | HA / MQTT / Matter skills |
-| [`apps/robot-api`](../apps/robot-api) | Skills, safety, ROS2 bridge |
-| [`apps/dashboard`](../apps/dashboard) | Operator UI |
-| [`sdk`](../sdk) | Public TS client |
-| [`sim`](../sim) | Gazebo / Isaac assets |
-| [`sidecars`](../sidecars) | Python inference only |
+| Path                                          | Role                                               |
+| --------------------------------------------- | -------------------------------------------------- |
+| [`packages/contracts`](../packages/contracts) | Ports, Zod schemas, event catalog (**sacred**)     |
+| [`packages/core`](../packages/core)           | DI, bus adapters, config, logging, plugin registry |
+| [`apps/brain`](../apps/brain)                 | LLM orchestration, personality, tool calling       |
+| [`apps/voice`](../apps/voice)                 | Voice pipeline orchestration                       |
+| [`apps/memory`](../apps/memory)               | ChromaDB / RAG / preferences                       |
+| [`apps/vision`](../apps/vision)               | Perception + world model                           |
+| [`apps/planner`](../apps/planner)             | Goals → action graphs                              |
+| [`apps/smart-home`](../apps/smart-home)       | HA / MQTT / Matter skills                          |
+| [`apps/robot-api`](../apps/robot-api)         | Skills, safety, ROS2 bridge                        |
+| [`apps/dashboard`](../apps/dashboard)         | Operator UI                                        |
+| [`sdk`](../sdk)                               | Public TS client                                   |
+| [`sim`](../sim)                               | Gazebo / Isaac assets                              |
+| [`sidecars`](../sidecars)                     | Python inference only                              |
 
 **Dependency rule:** apps import `@aria/contracts` and `@aria/core` only — never sibling apps.
 
@@ -77,10 +77,14 @@ flowchart TB
 Defined in `@aria/contracts`:
 
 - `ILLMProvider` — Qwen / Ollama / mock / cloud
+- `ITool` / `IToolRegistry` — brain tool calling (Phase 1)
+- `IPersonalityService` — bilingual personality / system prompts
+- `IToolResultSynthesizer` — natural-language tool results
+- `IConversationPlanner` — soft plan + tool-call validation (Phase 1)
 - `ISTTProvider` — Faster-Whisper / alternatives
 - `ITTSProvider` — Piper / alternatives
 - `IVisionProvider` — YOLO+SAM2+VLM facade
-- `IMemoryStore` — ChromaDB / alternatives
+- `IMemoryStore` — session store now; ChromaDB in Phase 3
 - `IMessageBus` — in-process / NATS
 - `IRobotSkill` — sim or real skill implementations
 
@@ -93,6 +97,12 @@ Swapping a model = new adapter + config change. Application services do not chan
 Microphone → VAD → STT → `conversation.user_utterance` → Brain (+ Memory) → optional Goal → Planner → Tools → `conversation.assistant_reply` → TTS → Speaker
 
 Target: < 2 s round trip. Persian and English auto-detected.
+
+### Brain (Phase 1)
+
+`conversation.user_utterance` → `IConversationPlanner.assess` → `IMemoryStore.query` → `IPersonalityService` system prompt → `ILLMProvider.generate` → `validateToolCalls` → tools → `IToolResultSynthesizer` → `conversation.assistant_reply` (+ turn metrics)
+
+Providers: `mock` | `echo` | `ollama` (see ADR-0005, ADR-0006).
 
 ### Vision
 
@@ -119,6 +129,7 @@ Environment variables select adapters (see `.env.example`):
 
 ```bash
 ARIA_LLM_PROVIDER=mock   # mock | echo | ollama
+ARIA_OLLAMA_MODEL=qwen3.5:latest
 ARIA_BUS=inprocess       # inprocess | nats
 ARIA_ENV=dev             # dev | sim | robot
 ```
@@ -129,3 +140,5 @@ ARIA_ENV=dev             # dev | sim | robot
 - [0002 Message bus](adrs/0002-message-bus.md)
 - [0003 Planner hybrid](adrs/0003-planner-bt-goap-hybrid.md)
 - [0004 Quantization / RTX 4060](adrs/0004-model-quantization-rtx4060.md)
+- [0005 Ollama LLM runtime](adrs/0005-ollama-llm-runtime.md)
+- [0006 Phase 1 brain quality stack](adrs/0006-phase1-brain-quality.md)

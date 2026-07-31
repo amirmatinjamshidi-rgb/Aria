@@ -8,7 +8,11 @@ import type {
   MemoryKind,
   MemoryRecord,
   SkillStatus,
+  ToolDefinition,
+  ToolResult,
 } from "./schemas.js";
+
+export type { ToolDefinition } from "./schemas.js";
 
 /** Unique plugin identity used by the plugin loader */
 export interface PluginMetadata {
@@ -26,12 +30,6 @@ export interface LlmGenerateOptions {
   readonly languageHint?: LanguageCode;
 }
 
-export interface ToolDefinition {
-  readonly name: string;
-  readonly description: string;
-  readonly parameters: Record<string, unknown>;
-}
-
 /**
  * Port: Large Language Model provider.
  * Implementations: mock, echo, ollama/qwen, cloud adapters.
@@ -43,6 +41,109 @@ export interface ILLMProvider {
     options?: LlmGenerateOptions,
   ): Promise<LlmCompletion>;
   dispose?(): Promise<void>;
+}
+
+export interface ToolExecutionContext {
+  readonly correlationId: string;
+  readonly language?: LanguageCode;
+}
+
+/**
+ * Port: A single callable tool registered with the brain tool registry.
+ * Zod argument validation lives in the registry; handlers stay pure.
+ */
+export interface ITool {
+  readonly definition: ToolDefinition;
+  execute(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext,
+  ): Promise<unknown>;
+}
+
+export interface IToolRegistry {
+  register(tool: ITool): void;
+  listDefinitions(): readonly ToolDefinition[];
+  execute(
+    toolCall: {
+      readonly id: string;
+      readonly name: string;
+      readonly arguments: Record<string, unknown>;
+    },
+    context: ToolExecutionContext,
+  ): Promise<ToolResult>;
+}
+
+/**
+ * Port: Personality / system-prompt service.
+ * Lives outside LLM adapters so tone stays provider-independent.
+ */
+export interface IPersonalityService {
+  buildSystemPrompt(languageHint?: LanguageCode): string;
+  describe(): {
+    readonly name: string;
+    readonly tone: string;
+    readonly traits: readonly string[];
+  };
+}
+
+/**
+ * Port: Turns structured tool results into natural language for the user/LLM.
+ * Formatting never lives inside individual tools.
+ */
+export interface IToolResultSynthesizer {
+  synthesize(result: ToolResult, language: LanguageCode): string;
+  /** True when assistant text looks like leaked raw JSON / tool dumps. */
+  looksLikeRawToolDump(text: string): boolean;
+}
+
+export interface ConversationPlanStep {
+  readonly id: string;
+  readonly kind: "respond" | "tool" | "reject";
+  readonly toolName?: string;
+  readonly rationale: string;
+}
+
+export interface ConversationPlan {
+  readonly steps: readonly ConversationPlanStep[];
+  readonly allowTools: boolean;
+  readonly rejected: boolean;
+  readonly rejectionReason?: string;
+}
+
+/**
+ * Port: Lightweight conversation planner (Phase 1).
+ * Validates / structures tool intent; does not own robot BT/GOAP (Phase 5).
+ */
+export interface IConversationPlanner {
+  /**
+   * Soft pre-plan: whether tools are plausible and whether the request is impossible.
+   * The LLM still decides the final tool calls.
+   */
+  assess(input: {
+    readonly text: string;
+    readonly language: LanguageCode;
+    readonly availableTools: readonly ToolDefinition[];
+  }): ConversationPlan;
+
+  /**
+   * Hard validation of LLM-proposed tool calls before execution.
+   * Drops unknown tools and impossible combinations.
+   */
+  validateToolCalls(
+    toolCalls: readonly {
+      readonly id: string;
+      readonly name: string;
+      readonly arguments: Record<string, unknown>;
+    }[],
+    availableTools: readonly ToolDefinition[],
+  ): {
+    readonly accepted: readonly {
+      readonly id: string;
+      readonly name: string;
+      readonly arguments: Record<string, unknown>;
+    }[];
+    readonly rejected: readonly { readonly name: string; readonly reason: string }[];
+  };
 }
 
 export interface SttTranscribeOptions {

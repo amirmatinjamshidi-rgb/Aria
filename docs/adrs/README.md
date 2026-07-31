@@ -8,6 +8,8 @@ This directory holds ADRs for Aria. Every significant architectural choice gets 
 | [0002](0002-message-bus.md) | Message bus: in-process + NATS port | Accepted |
 | [0003](0003-planner-bt-goap-hybrid.md) | Planner: BT + GOAP hybrid | Accepted |
 | [0004](0004-model-quantization-rtx4060.md) | Local model quantization for RTX 4060 | Accepted |
+| [0005](0005-ollama-llm-runtime.md) | Ollama as primary local LLM runtime | Accepted |
+| [0006](0006-phase1-brain-quality.md) | Phase 1 brain quality stack | Accepted |
 
 ## Template
 

@@ -61,6 +61,24 @@ describe("loadConfig", () => {
     expect(config.logLevel).toBe("debug");
     expect(config.bus).toBe("inprocess");
   });
+
+  it("loads ollama and personality Phase 1 settings", () => {
+    const config = loadConfig({
+      ARIA_LLM_PROVIDER: "ollama",
+      ARIA_OLLAMA_URL: "http://127.0.0.1:11434",
+      ARIA_OLLAMA_MODEL: "qwen3.5:latest",
+      ARIA_NAME: "Aria",
+      ARIA_PERSONALITY_TONE: "calm",
+      ARIA_PERSONALITY_TRAITS: "kind, bilingual",
+      ARIA_TOOLS_ENABLED: "true",
+      ARIA_TOOLS_MAX_ROUNDS: "2",
+    });
+    expect(config.llmProvider).toBe("ollama");
+    expect(config.ollama.model).toBe("qwen3.5:latest");
+    expect(config.personality.tone).toBe("calm");
+    expect(config.personality.traits).toEqual(["kind", "bilingual"]);
+    expect(config.tools.maxRounds).toBe(2);
+  });
 });
 
 describe("PluginRegistry", () => {
