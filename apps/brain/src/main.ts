@@ -8,7 +8,8 @@ import { cli } from "./cli/logger.js";
 import { createBrainContainer, resolveBrainPorts } from "./composition-root.js";
 
 /**
- * Phase 1 brain demo: bilingual multi-turn chat + tool calling over the bus.
+ * Phase 1 brain demo: fixed bilingual multi-turn script over the message bus.
+ * For interactive chat, use: npm run chat -w @aria/brain
  *
  * Usage:
  *   ARIA_LLM_PROVIDER=mock npm start -w @aria/brain
@@ -23,6 +24,8 @@ async function main(): Promise<void> {
   const { container, conversation } = await createBrainContainer();
   const { bus, llm, config } = resolveBrainPorts(container);
   spin.succeed("Brain ready");
+
+  cli.banner("fixed demo script");
 
   const stop = conversation.start();
 
@@ -58,6 +61,7 @@ async function main(): Promise<void> {
   ];
 
   cli.info(`Running ${demos.length} demo turns via ${llm.metadata.id}`);
+  cli.divider();
 
   for (const [index, demo] of demos.entries()) {
     const correlationId = `demo-${index + 1}`;
@@ -67,25 +71,33 @@ async function main(): Promise<void> {
     );
   }
 
-  const summaryLines = [
-    `Provider: ${llm.metadata.id} (${llm.metadata.name})`,
+  const entries: Array<readonly [string, string]> = [
+    ["Provider", `${llm.metadata.id} (${llm.metadata.name})`],
+    ["Tools", String(config.tools.enabled)],
+    ["Replies", String(replies.length)],
   ];
   if (config.llmProvider === "ollama") {
-    summaryLines.push(
-      `Model: ${config.ollama.model} @ ${config.ollama.baseUrl}`,
-    );
+    entries.splice(1, 0, [
+      "Model",
+      `${config.ollama.model} @ ${config.ollama.baseUrl}`,
+    ]);
   }
-  summaryLines.push(`Tools enabled: ${config.tools.enabled}`);
-  summaryLines.push(`Replies: ${replies.length}`);
   if (toolEvents.length > 0) {
-    summaryLines.push(`Tool calls: ${toolEvents.join(", ")}`);
+    entries.push(["Tool calls", toolEvents.join(", ")]);
   }
-  for (const [i, reply] of replies.entries()) {
-    summaryLines.push(`[${i + 1}] ${reply}`);
-  }
+
+  const summaryLines = [
+    ...cli.kv(entries),
+    "",
+    ...replies.map(
+      (reply, i) =>
+        `${cli.brand.muted(`[${i + 1}]`)}  ${cli.brand.soft(reply)}`,
+    ),
+  ];
 
   cli.box("Aria Brain Demo (Phase 1)", summaryLines);
   cli.success("Demo complete");
+  cli.goodbye();
 
   unsubTools();
   unsubReply();

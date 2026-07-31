@@ -14,3 +14,8 @@ export { EchoLlmProvider } from "./plugins/echo-llm.js";
 export { OllamaLlmProvider } from "./plugins/ollama-llm.js";
 export { runPhase1Evaluation } from "./evaluation/evaluation-runner.js";
 export { runPhase1Benchmark } from "./metrics/benchmark-runner.js";
+export { runReplSession } from "./cli/repl-session.js";
+export {
+  detectLanguage,
+  parseReplLine,
+} from "./cli/repl-commands.js";
