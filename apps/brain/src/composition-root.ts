@@ -17,6 +17,7 @@ import { ConversationPlanner } from "./planning/conversation-planner.js";
 import { EchoLlmProvider } from "./plugins/echo-llm.js";
 import { MockLlmProvider } from "./plugins/mock-llm.js";
 import { OllamaLlmProvider } from "./plugins/ollama-llm.js";
+import { OpenRouterLlmProvider } from "./plugins/openrouter-llm.js";
 import { ConversationService } from "./services/conversation-service.js";
 import { createDefaultToolRegistry } from "./tools/create-default-tools.js";
 import { ToolResultSynthesizer } from "./tools/tool-result-synthesizer.js";
@@ -56,11 +57,32 @@ export async function createBrainContainer(
         timeoutMs: config.ollama.timeoutMs,
       }),
   );
+  llmRegistry.register(
+    { id: "openrouter", name: "OpenRouter LLM", version: "1.0.0" },
+    () => {
+      const apiKey = config.openrouter.apiKey?.trim();
+      if (!apiKey) {
+        throw new Error(
+          "ARIA_OPENROUTER_API_KEY is required when ARIA_LLM_PROVIDER=openrouter",
+        );
+      }
+      return new OpenRouterLlmProvider({
+        baseUrl: config.openrouter.baseUrl,
+        apiKey,
+        model: config.openrouter.model,
+        temperature: config.openrouter.temperature,
+        maxTokens: config.openrouter.maxTokens,
+        timeoutMs: config.openrouter.timeoutMs,
+        httpReferer: config.openrouter.httpReferer,
+        appTitle: config.openrouter.appTitle,
+      });
+    },
+  );
 
   const llm = await llmRegistry.create(config.llmProvider);
   logger.info("LLM provider selected", {
     provider: llm.metadata.id,
-    model: config.llmProvider === "ollama" ? config.ollama.model : undefined,
+    model: selectedLlmModel(config),
   });
 
   const bus: IMessageBus =
@@ -121,6 +143,22 @@ export function resolveBrainPorts(container: Container): {
     config: container.resolve(TOKENS.Config),
     memory: container.resolve(TOKENS.MemoryStore),
   };
+}
+
+function selectedLlmModel(config: AriaConfig): string | undefined {
+  switch (config.llmProvider) {
+    case "ollama":
+      return config.ollama.model;
+    case "openrouter":
+      return config.openrouter.model;
+    case "mock":
+    case "echo":
+      return undefined;
+    default: {
+      const _exhaustive: never = config.llmProvider;
+      return _exhaustive;
+    }
+  }
 }
 
 export type { ToolRegistry, MetricsCollector };

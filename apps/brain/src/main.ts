@@ -15,6 +15,7 @@ import { createBrainContainer, resolveBrainPorts } from "./composition-root.js";
  *   ARIA_LLM_PROVIDER=mock npm start -w @aria/brain
  *   ARIA_LLM_PROVIDER=echo npm start -w @aria/brain
  *   ARIA_LLM_PROVIDER=ollama ARIA_OLLAMA_MODEL=qwen3.5:latest npm start -w @aria/brain
+ *   ARIA_LLM_PROVIDER=openrouter ARIA_OPENROUTER_API_KEY=sk-or-... npm start -w @aria/brain
  */
 async function main(): Promise<void> {
   // Keep structured JSON logs quiet so chalk/ora/boxen output stays readable.
@@ -80,6 +81,11 @@ async function main(): Promise<void> {
     entries.splice(1, 0, [
       "Model",
       `${config.ollama.model} @ ${config.ollama.baseUrl}`,
+    ]);
+  } else if (config.llmProvider === "openrouter") {
+    entries.splice(1, 0, [
+      "Model",
+      `${config.openrouter.model} @ ${config.openrouter.baseUrl}`,
     ]);
   }
   if (toolEvents.length > 0) {
