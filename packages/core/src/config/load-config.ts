@@ -4,7 +4,9 @@ import { AriaEnvironmentSchema, LogLevelSchema } from "@aria/contracts";
 export const AriaConfigSchema = z.object({
   env: AriaEnvironmentSchema.default("dev"),
   logLevel: LogLevelSchema.default("info"),
-  llmProvider: z.enum(["mock", "echo", "ollama"]).default("mock"),
+  llmProvider: z
+    .enum(["mock", "echo", "ollama", "openrouter"])
+    .default("mock"),
   bus: z.enum(["inprocess", "nats"]).default("inprocess"),
   natsUrl: z.string().default("nats://127.0.0.1:4222"),
   ollama: z
@@ -14,6 +16,21 @@ export const AriaConfigSchema = z.object({
       temperature: z.number().min(0).max(2).default(0.4),
       maxTokens: z.number().int().positive().default(1024),
       timeoutMs: z.number().int().positive().default(120_000),
+    })
+    .default({}),
+  openrouter: z
+    .object({
+      baseUrl: z.string().url().default("https://openrouter.ai/api/v1"),
+      apiKey: z.string().optional(),
+      model: z
+        .string()
+        .default("nvidia/nemotron-3-ultra-550b-a55b:free"),
+      temperature: z.number().min(0).max(2).default(0.4),
+      maxTokens: z.number().int().positive().default(1024),
+      timeoutMs: z.number().int().positive().default(120_000),
+      /** Optional OpenRouter ranking headers */
+      httpReferer: z.string().url().optional(),
+      appTitle: z.string().default("Aria"),
     })
     .default({}),
   personality: z
@@ -71,6 +88,22 @@ export function loadConfig(
       timeoutMs: env["ARIA_OLLAMA_TIMEOUT_MS"]
         ? Number(env["ARIA_OLLAMA_TIMEOUT_MS"])
         : undefined,
+    },
+    openrouter: {
+      baseUrl: env["ARIA_OPENROUTER_BASE_URL"],
+      apiKey: env["ARIA_OPENROUTER_API_KEY"],
+      model: env["ARIA_OPENROUTER_MODEL"],
+      temperature: env["ARIA_OPENROUTER_TEMPERATURE"]
+        ? Number(env["ARIA_OPENROUTER_TEMPERATURE"])
+        : undefined,
+      maxTokens: env["ARIA_OPENROUTER_MAX_TOKENS"]
+        ? Number(env["ARIA_OPENROUTER_MAX_TOKENS"])
+        : undefined,
+      timeoutMs: env["ARIA_OPENROUTER_TIMEOUT_MS"]
+        ? Number(env["ARIA_OPENROUTER_TIMEOUT_MS"])
+        : undefined,
+      httpReferer: env["ARIA_OPENROUTER_HTTP_REFERER"],
+      appTitle: env["ARIA_OPENROUTER_APP_TITLE"],
     },
     personality: {
       name: env["ARIA_NAME"] ?? "Aria",
