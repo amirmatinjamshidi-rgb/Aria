@@ -33,6 +33,7 @@ npm run start -w @aria/brain
 
 # Swap provider — no code changes
 ARIA_LLM_PROVIDER=echo npm run start -w @aria/brain
+# Online (optional): ARIA_LLM_PROVIDER=openrouter ARIA_OPENROUTER_API_KEY=...
 ```
 
 ## Commit expectations
