@@ -94,8 +94,17 @@ describe("loadConfig", () => {
     expect(config.openrouter.baseUrl).toBe("https://openrouter.ai/api/v1");
     expect(config.openrouter.appTitle).toBe("Aria Dev");
   });
-});
 
+  it("defaults web tools off and loads web overrides", () => {
+    expect(loadConfig({}).web.enabled).toBe(false);
+    const config = loadConfig({
+      ARIA_WEB_ENABLED: "true",
+      ARIA_WEB_SEARCH_PROVIDER: "duckduckgo",
+    });
+    expect(config.web.enabled).toBe(true);
+    expect(config.web.searchProvider).toBe("duckduckgo");
+  });
+});
 describe("PluginRegistry", () => {
   it("creates registered plugins by id", async () => {
     const registry = new PluginRegistry<{ hello: string }>();
