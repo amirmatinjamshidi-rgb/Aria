@@ -5,6 +5,10 @@ import {
   ToolCallSchema,
   ToolDefinitionSchema,
   ToolResultSchema,
+  VoicePipelineStateSchema,
+  VoiceTurnMetricsSchema,
+  WebPageContentSchema,
+  WebSearchResponseSchema,
   createAssistantReply,
   createToolCallCompleted,
   createToolCallRequested,
@@ -66,5 +70,45 @@ describe("@aria/contracts", () => {
     const completed = createToolCallCompleted(result, "c1");
     expect(requested.type).toBe(AriaEventType.ConversationToolCallRequested);
     expect(completed.type).toBe(AriaEventType.ConversationToolCallCompleted);
+  });
+
+  it("validates voice lifecycle state and latency metrics", () => {
+    expect(VoicePipelineStateSchema.parse("speaking")).toBe("speaking");
+    const metrics = VoiceTurnMetricsSchema.parse({
+      correlationId: "voice-1",
+      speechDurationMs: 800,
+      vadMs: 12,
+      sttMs: 320,
+      agentMs: 600,
+      ttsMs: 180,
+      playbackStartMs: 1100,
+      totalMs: 1900,
+      interrupted: false,
+      timestamp: new Date().toISOString(),
+    });
+    expect(metrics.playbackStartMs).toBeLessThan(2000);
+  });
+
+  it("parses web search and page schemas", () => {
+    const search = WebSearchResponseSchema.parse({
+      query: "aria",
+      provider: "mock",
+      hits: [
+        {
+          title: "Aria",
+          url: "https://example.com",
+          snippet: "home assistant",
+        },
+      ],
+    });
+    expect(search.hits).toHaveLength(1);
+
+    const page = WebPageContentSchema.parse({
+      url: "https://example.com/page",
+      title: "Page",
+      text: "Hello",
+      truncated: false,
+    });
+    expect(page.text).toBe("Hello");
   });
 });
