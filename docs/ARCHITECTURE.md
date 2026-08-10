@@ -58,7 +58,8 @@ flowchart TB
 | --------------------------------------------- | -------------------------------------------------- |
 | [`packages/contracts`](../packages/contracts) | Ports, Zod schemas, event catalog (**sacred**)     |
 | [`packages/core`](../packages/core)           | DI, bus adapters, config, logging, plugin registry |
-| [`apps/brain`](../apps/brain)                 | LLM orchestration, personality, tool calling       |
+| [`packages/tool-runtime`](../packages/tool-runtime) | Tool registry, executor, permissions, search orchestration |
+| [`apps/brain`](../apps/brain)                 | LLM orchestration, personality, tool modules       |
 | [`apps/voice`](../apps/voice)                 | Voice pipeline orchestration                       |
 | [`apps/memory`](../apps/memory)               | ChromaDB / RAG / preferences                       |
 | [`apps/vision`](../apps/vision)               | Perception + world model                           |
@@ -76,11 +77,14 @@ flowchart TB
 
 Defined in `@aria/contracts`:
 
-- `ILLMProvider` — Qwen / Ollama / mock / cloud
-- `ITool` / `IToolRegistry` — brain tool calling (Phase 1)
+- `ILLMProvider` — Qwen / Ollama / OpenRouter / mock / cloud
+- `ITool` / `IToolRegistry` / `IToolCatalog` / `IToolExecutor` — tool platform (ADR-0010)
+- `ISearchProvider` / `ISearchOrchestrator` — swappable search backends (ADR-0010)
+- `IWebSearchProvider` / `IWebPageFetcher` — legacy web look-up (ADR-0009; prefer search ports)
 - `IPersonalityService` — bilingual personality / system prompts
-- `IToolResultSynthesizer` — natural-language tool results
-- `IConversationPlanner` — soft plan + tool-call validation (Phase 1)
+- `IToolResultSynthesizer` — natural-language tool results (formatter registry)
+- `IConversationPlanner` — soft plan + catalog-based tool-call validation
+- `IPermissionStore` / `IPermissionGate` — tool permission grants
 - `ISTTProvider` — Faster-Whisper / alternatives
 - `ITTSProvider` — Piper / alternatives
 - `IVisionProvider` — YOLO+SAM2+VLM facade
@@ -90,19 +94,38 @@ Defined in `@aria/contracts`:
 
 Swapping a model = new adapter + config change. Application services do not change.
 
+**Adding a tool** = implement `ITool` + register in `registerBuiltinTools` — do not edit planner or prompts (ADR-0010).
+
 ## Pipelines
 
 ### Voice
 
 Microphone → VAD → STT → `conversation.user_utterance` → Brain (+ Memory) → optional Goal → Planner → Tools → `conversation.assistant_reply` → TTS → Speaker
 
-Target: < 2 s round trip. Persian and English auto-detected.
+Phase 2 uses FFmpeg/FFplay for replaceable cross-platform audio I/O and a
+loopback-only FastAPI sidecar for Silero VAD, Faster-Whisper, and Piper. The
+TypeScript state machine remains continuously listening during transcription,
+agent work, and playback so detected speech can cancel a stale turn or stop
+playback (barge-in).
 
-### Brain (Phase 1)
+The web interaction surface (`apps/dashboard`) connects through the voice web
+gateway (`npm run voice:web`): text turns and browser PCM share the same
+pipeline and bus (ADR-0008).
 
-`conversation.user_utterance` → `IConversationPlanner.assess` → `IMemoryStore.query` → `IPersonalityService` system prompt → `ILLMProvider.generate` → `validateToolCalls` → tools → `IToolResultSynthesizer` → `conversation.assistant_reply` (+ turn metrics)
+Audio is 16 kHz, mono, signed 16-bit little-endian PCM. Capture and VAD are
+streaming; Faster-Whisper receives a complete VAD-segmented utterance. This is
+intentional: Faster-Whisper is not presented as a true incremental decoder.
 
-Providers: `mock` | `echo` | `ollama` (see ADR-0005, ADR-0006).
+Every turn publishes `voice.turn_metrics`; the primary latency objective is
+end-of-speech to playback start `< 2 s`. Persian and English are auto-detected.
+
+### Brain (Phase 1 + Tool Platform)
+
+`conversation.user_utterance` → `IConversationPlanner.assess` → `IMemoryStore.query` → `IPersonalityService` + catalog guidance → `ILLMProvider.generate` → `validateToolCalls` → `IToolExecutor` → `IToolResultSynthesizer` → `conversation.assistant_reply` (+ turn metrics)
+
+Providers: `mock` | `echo` | `ollama` | `openrouter` (see ADR-0005, ADR-0006, ADR-0007).
+
+Optional search tools (`search_web`, `search_wikipedia`, `fetch_page`, …) register when `ARIA_WEB_ENABLED=true` (ADR-0009, ADR-0010). Catalog-driven discovery; planner does not hardcode tool names.
 
 ### Vision
 
@@ -128,10 +151,16 @@ Behavior Trees for execution; GOAP-style decomposition for goal assembly; FSMs o
 Environment variables select adapters (see `.env.example`):
 
 ```bash
-ARIA_LLM_PROVIDER=mock   # mock | echo | ollama
+ARIA_LLM_PROVIDER=mock   # mock | echo | ollama | openrouter
 ARIA_OLLAMA_MODEL=qwen3.5:latest
+# ARIA_OPENROUTER_API_KEY=          # required when provider=openrouter
+# ARIA_OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
 ARIA_BUS=inprocess       # inprocess | nats
 ARIA_ENV=dev             # dev | sim | robot
+# Optional web look-up tools (off by default — local-first)
+# ARIA_WEB_ENABLED=true
+# ARIA_WEB_SEARCH_PROVIDER=mock   # mock | duckduckgo
+# ARIA_SEARCH_PROVIDERS=duckduckgo,wikipedia   # optional multi-provider list
 ```
 
 ## Related ADRs
@@ -142,3 +171,6 @@ ARIA_ENV=dev             # dev | sim | robot
 - [0004 Quantization / RTX 4060](adrs/0004-model-quantization-rtx4060.md)
 - [0005 Ollama LLM runtime](adrs/0005-ollama-llm-runtime.md)
 - [0006 Phase 1 brain quality stack](adrs/0006-phase1-brain-quality.md)
+- [0007 OpenRouter optional online LLM](adrs/0007-openrouter-llm-provider.md)
+- [0008 Web interaction gateway](adrs/0008-web-interaction-gateway.md)
+- [0009 Web search / fetch tools](adrs/0009-web-search-fetch-tools.md)
