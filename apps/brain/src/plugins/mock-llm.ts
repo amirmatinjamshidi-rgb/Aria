@@ -88,6 +88,43 @@ export class MockLlmProvider implements ILLMProvider {
       };
     }
 
+    if (
+      (toolNames.has("search_web") || toolNames.has("web_search")) &&
+      this.asksForWeb(text)
+    ) {
+      const name = toolNames.has("search_web") ? "search_web" : "web_search";
+      return {
+        content: "",
+        toolCalls: [
+          {
+            id: "mock-web-1",
+            name,
+            arguments: { query: text.slice(0, 200) },
+          },
+        ],
+        language,
+        finishReason: "tool_calls",
+      };
+    }
+
+    if (toolNames.has("fetch_page") && this.asksToFetchPage(text)) {
+      const match = text.match(/https?:\/\/\S+/i);
+      return {
+        content: "",
+        toolCalls: [
+          {
+            id: "mock-fetch-1",
+            name: "fetch_page",
+            arguments: {
+              url: match?.[0]?.replace(/[.,;:!?)]+$/, "") ?? "https://example.com",
+            },
+          },
+        ],
+        language,
+        finishReason: "tool_calls",
+      };
+    }
+
     if (/who are you|کی هستی|کیستی/i.test(text)) {
       return {
         content:
@@ -121,5 +158,20 @@ export class MockLlmProvider implements ILLMProvider {
 
   private asksToNote(text: string): boolean {
     return /remember|prefer|یادداشت|یادت|ترجیح/i.test(text);
+  }
+
+  private asksForWeb(text: string): boolean {
+    return /search (the )?(web|internet|online)|look up|google|browse|find (online|on the (web|internet))|latest news|جستجو|اینترنت|اخبار|سرچ کن/i.test(
+      text,
+    );
+  }
+
+  private asksToFetchPage(text: string): boolean {
+    return (
+      /https?:\/\/\S+/i.test(text) ||
+      /open (this |the )?link|fetch (this |the )?page|read (this |the )?url|این لینک|صفحه را بخوان/i.test(
+        text,
+      )
+    );
   }
 }

@@ -1,14 +1,41 @@
 {
   "name": "@aria/voice",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Aria voice pipeline — VAD, STT, TTS orchestration (Phase 2)",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
-    "build": "node -e \"console.log('@aria/voice: Phase 2 placeholder')\"",
-    "test": "node -e \"process.exit(0)\"",
-    "typecheck": "node -e \"process.exit(0)\"",
-    "lint": "node -e \"process.exit(0)\"",
-    "clean": "node -e \"process.exit(0)\""
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/main.ts",
+    "web": "tsx src/web-gateway.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@aria/brain": "*",
+    "@aria/contracts": "*",
+    "@aria/core": "*",
+    "dotenv": "^17.4.2",
+    "ws": "^8.21.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/ws": "^8.18.1",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
   }
 }

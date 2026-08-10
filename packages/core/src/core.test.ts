@@ -79,8 +79,32 @@ describe("loadConfig", () => {
     expect(config.personality.traits).toEqual(["kind", "bilingual"]);
     expect(config.tools.maxRounds).toBe(2);
   });
-});
 
+  it("loads openrouter settings with default Nemotron free model", () => {
+    const config = loadConfig({
+      ARIA_LLM_PROVIDER: "openrouter",
+      ARIA_OPENROUTER_API_KEY: "sk-or-test",
+      ARIA_OPENROUTER_APP_TITLE: "Aria Dev",
+    });
+    expect(config.llmProvider).toBe("openrouter");
+    expect(config.openrouter.apiKey).toBe("sk-or-test");
+    expect(config.openrouter.model).toBe(
+      "nvidia/nemotron-3-ultra-550b-a55b:free",
+    );
+    expect(config.openrouter.baseUrl).toBe("https://openrouter.ai/api/v1");
+    expect(config.openrouter.appTitle).toBe("Aria Dev");
+  });
+
+  it("defaults web tools off and loads web overrides", () => {
+    expect(loadConfig({}).web.enabled).toBe(false);
+    const config = loadConfig({
+      ARIA_WEB_ENABLED: "true",
+      ARIA_WEB_SEARCH_PROVIDER: "duckduckgo",
+    });
+    expect(config.web.enabled).toBe(true);
+    expect(config.web.searchProvider).toBe("duckduckgo");
+  });
+});
 describe("PluginRegistry", () => {
   it("creates registered plugins by id", async () => {
     const registry = new PluginRegistry<{ hello: string }>();

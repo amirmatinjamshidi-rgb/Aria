@@ -9,17 +9,22 @@ import {
   type IMemoryStore,
   type IMessageBus,
   type IPersonalityService,
-  type IToolRegistry,
+  type IToolCatalog,
+  type IToolExecutor,
   type IToolResultSynthesizer,
   type LanguageCode,
+  type PermissionId,
   type UserUtteranceEvent,
+  type VoiceInterruptedEvent,
 } from "@aria/contracts";
 import type { Logger } from "@aria/core";
+import { LoggingDecisionTraceWriter } from "@aria/tool-runtime";
 import { MetricsCollector, TurnTimer, type TurnMetrics } from "../metrics/turn-timer.js";
 
 export interface ConversationServiceOptions {
   readonly toolsEnabled: boolean;
   readonly maxToolRounds: number;
+  readonly grantedPermissions: ReadonlySet<PermissionId>;
 }
 
 /**
@@ -30,24 +35,50 @@ export interface ConversationServiceOptions {
 export class ConversationService {
   private readonly history: ChatMessage[] = [];
   private readonly metrics = new MetricsCollector();
+  private readonly activeTurnControllers = new Map<string, AbortController>();
+  private readonly decisionTraces: LoggingDecisionTraceWriter;
 
   constructor(
     private readonly llm: ILLMProvider,
     private readonly bus: IMessageBus,
     private readonly logger: Logger,
     private readonly personality: IPersonalityService,
-    private readonly tools: IToolRegistry,
+    private readonly catalog: IToolCatalog,
+    private readonly executor: IToolExecutor,
     private readonly synthesizer: IToolResultSynthesizer,
     private readonly planner: IConversationPlanner,
     private readonly memory: IMemoryStore,
     private readonly options: ConversationServiceOptions,
-  ) {}
+  ) {
+    this.decisionTraces = new LoggingDecisionTraceWriter((message, meta) =>
+      this.logger.info(message, meta),
+    );
+  }
 
   start(): () => void {
-    return this.bus.subscribe(
+    const stopUtterances = this.bus.subscribe(
       AriaEventType.ConversationUserUtterance,
       (event) => this.handleUtterance(event as UserUtteranceEvent),
     );
+    const stopInterrupts = this.bus.subscribe(
+      AriaEventType.VoiceInterrupted,
+      (event) => {
+        const interrupted = event as VoiceInterruptedEvent;
+        if (interrupted.correlationId) {
+          this.activeTurnControllers
+            .get(interrupted.correlationId)
+            ?.abort();
+        }
+      },
+    );
+    return () => {
+      stopUtterances();
+      stopInterrupts();
+      for (const controller of this.activeTurnControllers.values()) {
+        controller.abort();
+      }
+      this.activeTurnControllers.clear();
+    };
   }
 
   getHistory(): readonly ChatMessage[] {
@@ -63,6 +94,8 @@ export class ConversationService {
   }
 
   private async handleUtterance(event: UserUtteranceEvent): Promise<void> {
+    const turnController = new AbortController();
+    this.activeTurnControllers.set(event.correlationId, turnController);
     const timer = new TurnTimer();
     let toolCount = 0;
     let memoryHits = 0;
@@ -76,7 +109,10 @@ export class ConversationService {
     this.history.push({ role: "user", content: event.text });
 
     const toolDefs = this.options.toolsEnabled
-      ? this.tools.listDefinitions()
+      ? this.catalog.definitionsForLlm({
+          permissions: this.options.grantedPermissions,
+          enabledOnly: true,
+        })
       : [];
 
     const plan = this.planner.assess({
@@ -93,6 +129,7 @@ export class ConversationService {
           : "I cannot fulfill that request.");
       await this.publishReply(text, event.language, event.correlationId);
       this.recordTurn(timer, event, 0, 0, 0, text.length);
+      this.activeTurnControllers.delete(event.correlationId);
       return;
     }
 
@@ -103,6 +140,10 @@ export class ConversationService {
     });
     memoryHits = memories.length;
     timer.end("memory");
+    if (turnController.signal.aborted) {
+      this.activeTurnControllers.delete(event.correlationId);
+      return;
+    }
 
     const memoryBlock =
       memories.length > 0
@@ -114,15 +155,27 @@ export class ConversationService {
           ].join("\n")
         : "";
 
+    const catalogGuidance = this.catalog.toPromptGuidance({
+      permissions: this.options.grantedPermissions,
+      maxTools: 40,
+    });
+
     const basePrompt = this.personality.buildSystemPrompt(event.language);
-    const systemPrompt = memoryBlock
-      ? `${basePrompt}\n\n${memoryBlock}`
-      : basePrompt;
+    const systemPrompt = [basePrompt, memoryBlock, catalogGuidance]
+      .filter((block) => block && block.length > 0)
+      .join("\n\n");
 
     let rounds = 0;
     let finalContent = "";
     let finalLanguage: LanguageCode = event.language;
     const toolNarratives: string[] = [];
+
+    const execContext = {
+      correlationId: event.correlationId,
+      language: event.language,
+      signal: turnController.signal,
+      grantedPermissions: this.options.grantedPermissions,
+    };
 
     try {
       while (rounds <= this.options.maxToolRounds) {
@@ -136,6 +189,7 @@ export class ConversationService {
           languageHint: event.language,
           tools:
             plan.allowTools && toolDefs.length > 0 ? toolDefs : undefined,
+          signal: turnController.signal,
         });
         timer.end("llm");
 
@@ -157,6 +211,18 @@ export class ConversationService {
             completion.toolCalls,
             toolDefs,
           );
+
+          this.decisionTraces.write({
+            correlationId: event.correlationId,
+            catalogVersion: this.catalog.version,
+            accepted: validation.accepted.map((c) => c.name),
+            rejected: validation.rejected.map((r) => ({
+              name: r.name,
+              code: r.code ?? "REJECTED",
+              reason: r.reason,
+            })),
+            timestamp: new Date().toISOString(),
+          });
 
           for (const rejected of validation.rejected) {
             this.logger.warn("tool call rejected by planner", {
@@ -181,19 +247,21 @@ export class ConversationService {
             content: completion.content || "",
           });
 
-          for (const toolCall of validation.accepted) {
+          timer.start("tool");
+          const results = await this.executor.executeMany(
+            validation.accepted,
+            execContext,
+          );
+          timer.end("tool");
+
+          for (let i = 0; i < validation.accepted.length; i += 1) {
+            const toolCall = validation.accepted[i]!;
+            const result = results[i]!;
+            toolCount += 1;
+
             await this.bus.publish(
               createToolCallRequested(toolCall, event.correlationId),
             );
-
-            timer.start("tool");
-            const result = await this.tools.execute(toolCall, {
-              correlationId: event.correlationId,
-              language: event.language,
-            });
-            timer.end("tool");
-            toolCount += 1;
-
             await this.bus.publish(
               createToolCallCompleted(result, event.correlationId),
             );
@@ -204,7 +272,6 @@ export class ConversationService {
             );
             toolNarratives.push(narrative);
 
-            // Feed the model a natural summary — never raw JSON dumps
             this.history.push({
               role: "tool",
               name: toolCall.name,
@@ -230,6 +297,13 @@ export class ConversationService {
         break;
       }
     } catch (error: unknown) {
+      if (turnController.signal.aborted) {
+        this.logger.info("conversation turn cancelled", {
+          correlationId: event.correlationId,
+        });
+        this.activeTurnControllers.delete(event.correlationId);
+        return;
+      }
       const detail = error instanceof Error ? error.message : String(error);
       this.logger.error("conversation turn failed", {
         correlationId: event.correlationId,
@@ -243,23 +317,22 @@ export class ConversationService {
     }
 
     if (!finalContent) {
-      // Prefer synthesized tool narratives over empty / JSON replies
       finalContent =
         toolNarratives.at(-1) ??
-        (finalLanguage === "fa"
-          ? "انجام شد."
-          : "Done.");
+        (finalLanguage === "fa" ? "انجام شد." : "Done.");
       this.history.push({ role: "assistant", content: finalContent });
     }
 
     if (this.synthesizer.looksLikeRawToolDump(finalContent)) {
       finalContent =
         toolNarratives.at(-1) ??
-        (finalLanguage === "fa"
-          ? "انجام شد."
-          : "Done.");
+        (finalLanguage === "fa" ? "انجام شد." : "Done.");
     }
 
+    if (turnController.signal.aborted) {
+      this.activeTurnControllers.delete(event.correlationId);
+      return;
+    }
     await this.publishReply(finalContent, finalLanguage, event.correlationId);
     this.recordTurn(
       timer,
@@ -269,6 +342,7 @@ export class ConversationService {
       memoryHits,
       finalContent.length,
     );
+    this.activeTurnControllers.delete(event.correlationId);
   }
 
   private async publishReply(
@@ -287,7 +361,10 @@ export class ConversationService {
     toolName: string,
     result: { ok: boolean; result?: unknown },
   ): Promise<void> {
-    if (!result.ok || toolName !== "note_preference") {
+    if (
+      !result.ok ||
+      (toolName !== "note_preference" && toolName !== "update_preference")
+    ) {
       return;
     }
     const data =
@@ -297,6 +374,10 @@ export class ConversationService {
     const key = typeof data["key"] === "string" ? data["key"] : undefined;
     const value = typeof data["value"] === "string" ? data["value"] : undefined;
     if (!key || !value) {
+      return;
+    }
+    // Preference tools already write to memory; avoid duplicate store.
+    if (toolName === "update_preference" || toolName === "note_preference") {
       return;
     }
     await this.memory.store({

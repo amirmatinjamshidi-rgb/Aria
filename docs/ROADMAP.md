@@ -79,12 +79,17 @@ Golden conversation fixtures (en/fa); tool-call schema tests; eval + benchmark r
 Streaming tokens; multi-agent specialist brains behind same port
 Chroma-backed memory (Phase 3); BT/GOAP planner (Phase 5)
 Live Ollama integration smoke in CI when a runner has GPU + model cached
+**Tool Platform (ADR-0010):** `@aria/tool-runtime` + rich `ToolMetadata`; add tools via register-only; specialized search + memory tools; planned stubs for desktop/robot/vision
 
 ---
 
 ## Phase 2 — Voice
 
 **Duration:** 6–8 weeks
+
+**Implementation status:** software pipeline implemented on `Phase-two`;
+hardware/model acceptance remains pending local model installation and measured
+RTX 4060 latency.
 
 ### Objectives
 Hands-free voice loop offline

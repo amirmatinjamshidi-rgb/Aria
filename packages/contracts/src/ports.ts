@@ -1,6 +1,8 @@
 import type { AriaEvent, AriaEventTypeName, EventHandler } from "./events.js";
+import type {  PluginMetadata } from "./plugin-metadata.js";
 import type {
   ChatMessage,
+  AudioFormat,
   DetectedObject,
   Goal,
   LanguageCode,
@@ -9,18 +11,15 @@ import type {
   MemoryRecord,
   SkillStatus,
   ToolDefinition,
-  ToolResult,
+  Transcription,
+  VoicePipelineState,
 } from "./schemas.js";
 
+export type { PluginFactory, PluginMetadata } from "./plugin-metadata.js";
 export type { ToolDefinition } from "./schemas.js";
 
-/** Unique plugin identity used by the plugin loader */
-export interface PluginMetadata {
-  readonly id: string;
-  readonly name: string;
-  readonly version: string;
-  readonly description?: string;
-}
+export * from "./ports/tools.js";
+export * from "./ports/search.js";
 
 export interface LlmGenerateOptions {
   readonly systemPrompt?: string;
@@ -28,11 +27,12 @@ export interface LlmGenerateOptions {
   readonly maxTokens?: number;
   readonly tools?: readonly ToolDefinition[];
   readonly languageHint?: LanguageCode;
+  readonly signal?: AbortSignal;
 }
 
 /**
  * Port: Large Language Model provider.
- * Implementations: mock, echo, ollama/qwen, cloud adapters.
+ * Implementations: mock, echo, ollama/qwen, openrouter, cloud adapters.
  */
 export interface ILLMProvider {
   readonly metadata: PluginMetadata;
@@ -41,36 +41,6 @@ export interface ILLMProvider {
     options?: LlmGenerateOptions,
   ): Promise<LlmCompletion>;
   dispose?(): Promise<void>;
-}
-
-export interface ToolExecutionContext {
-  readonly correlationId: string;
-  readonly language?: LanguageCode;
-}
-
-/**
- * Port: A single callable tool registered with the brain tool registry.
- * Zod argument validation lives in the registry; handlers stay pure.
- */
-export interface ITool {
-  readonly definition: ToolDefinition;
-  execute(
-    args: Record<string, unknown>,
-    context: ToolExecutionContext,
-  ): Promise<unknown>;
-}
-
-export interface IToolRegistry {
-  register(tool: ITool): void;
-  listDefinitions(): readonly ToolDefinition[];
-  execute(
-    toolCall: {
-      readonly id: string;
-      readonly name: string;
-      readonly arguments: Record<string, unknown>;
-    },
-    context: ToolExecutionContext,
-  ): Promise<ToolResult>;
 }
 
 /**
@@ -86,21 +56,12 @@ export interface IPersonalityService {
   };
 }
 
-/**
- * Port: Turns structured tool results into natural language for the user/LLM.
- * Formatting never lives inside individual tools.
- */
-export interface IToolResultSynthesizer {
-  synthesize(result: ToolResult, language: LanguageCode): string;
-  /** True when assistant text looks like leaked raw JSON / tool dumps. */
-  looksLikeRawToolDump(text: string): boolean;
-}
-
 export interface ConversationPlanStep {
   readonly id: string;
   readonly kind: "respond" | "tool" | "reject";
   readonly toolName?: string;
   readonly rationale: string;
+  readonly categoryHint?: string;
 }
 
 export interface ConversationPlan {
@@ -113,6 +74,7 @@ export interface ConversationPlan {
 /**
  * Port: Lightweight conversation planner (Phase 1).
  * Validates / structures tool intent; does not own robot BT/GOAP (Phase 5).
+ * Must not hardcode concrete tool names — catalog is the source of truth.
  */
 export interface IConversationPlanner {
   /**
@@ -142,13 +104,15 @@ export interface IConversationPlanner {
       readonly name: string;
       readonly arguments: Record<string, unknown>;
     }[];
-    readonly rejected: readonly { readonly name: string; readonly reason: string }[];
+    readonly rejected: readonly { readonly name: string; readonly reason: string; readonly code?: string }[];
   };
 }
 
 export interface SttTranscribeOptions {
   readonly languageHint?: LanguageCode | "auto";
   readonly sampleRateHz?: number;
+  readonly beamSize?: number;
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -159,7 +123,7 @@ export interface ISTTProvider {
   transcribe(
     audio: Uint8Array,
     options?: SttTranscribeOptions,
-  ): Promise<{ text: string; language: LanguageCode; confidence?: number }>;
+  ): Promise<Transcription>;
   dispose?(): Promise<void>;
 }
 
@@ -167,6 +131,7 @@ export interface TtsSynthesizeOptions {
   readonly language: LanguageCode;
   readonly voiceId?: string;
   readonly speakingRate?: number;
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -179,6 +144,51 @@ export interface ITTSProvider {
     options: TtsSynthesizeOptions,
   ): Promise<{ audio: Uint8Array; sampleRateHz: number }>;
   dispose?(): Promise<void>;
+}
+
+export type AudioChunkHandler = (
+  chunk: Uint8Array,
+) => void | Promise<void>;
+
+/** Port: continuous PCM microphone capture. */
+export interface IAudioSource {
+  readonly format: AudioFormat;
+  start(handler: AudioChunkHandler, signal: AbortSignal): Promise<void>;
+  stop(): Promise<void>;
+}
+
+/** Port: cancellable audio output. Barge-in calls stop immediately. */
+export interface IAudioPlayback {
+  play(
+    audio: Uint8Array,
+    format: Pick<AudioFormat, "sampleRateHz" | "channels">,
+    signal: AbortSignal,
+  ): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface VadFrameResult {
+  readonly probability: number;
+  readonly speechStarted: boolean;
+  readonly speechEnded: boolean;
+}
+
+/** Port: stateful streaming voice activity detection. */
+export interface IVoiceActivityDetector {
+  readonly metadata: PluginMetadata;
+  process(
+    pcm: Uint8Array,
+    format: AudioFormat,
+    signal?: AbortSignal,
+  ): Promise<VadFrameResult>;
+  reset(): Promise<void>;
+  dispose?(): Promise<void>;
+}
+
+export interface VoicePipelineSnapshot {
+  readonly state: VoicePipelineState;
+  readonly activeCorrelationId?: string;
+  readonly startedAt?: string;
 }
 
 export interface VisionAnalyzeOptions {
@@ -262,6 +272,3 @@ export interface IRobotSkill {
   readonly skillId: string;
   execute(context: SkillContext): Promise<SkillResult>;
 }
-
-/** Generic factory signature used by the plugin loader */
-export type PluginFactory<T> = () => T | Promise<T>;

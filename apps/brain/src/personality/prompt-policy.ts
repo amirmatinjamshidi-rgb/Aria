@@ -48,6 +48,9 @@ export const TOOL_USAGE_RULES = [
   "Translate tool output into natural, human-friendly language.",
   "If a tool fails, explain what happened and suggest the next step.",
   "Do not expose internal implementation details.",
+  "Prefer the most specific available tool for the user's intent (the tool list is authoritative).",
+  "When citing search results, briefly mention the source title or site; do not dump long raw excerpts unless asked.",
+  "If a needed capability is missing from the available tools list, say so clearly instead of inventing results.",
 ] as const;
 
 export const MEMORY_RULES = [

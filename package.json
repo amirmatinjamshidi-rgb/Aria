@@ -1,6 +1,7 @@
 {
   "name": "aria",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "description": "Aria — modular, local-first humanoid robot software platform",
   "packageManager": "npm@11.4.2",
@@ -15,6 +16,11 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev --filter=@aria/brain",
+    "chat": "npm run chat -w @aria/brain",
+    "voice": "npm run dev -w @aria/voice",
+    "voice:web": "npm run web -w @aria/voice",
+    "voice:sidecar": "node scripts/run-voice-sidecar.mjs",
+    "dashboard": "npm run dev -w @aria/dashboard",
     "lint": "turbo run lint",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",

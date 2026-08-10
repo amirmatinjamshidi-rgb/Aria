@@ -1,8 +1,57 @@
 import { z } from "zod";
+import {
+  ToolErrorSchema,
+  type ToolError,
+} from "./schemas/tools.js";
+
+export type { ToolError };
+export * from "./schemas/tools.js";
+export * from "./schemas/search.js";
 
 /** ISO language tags Aria supports in Phase 0+ */
 export const LanguageCodeSchema = z.enum(["en", "fa"]);
 export type LanguageCode = z.infer<typeof LanguageCodeSchema>;
+
+export const VoicePipelineStateSchema = z.enum([
+  "idle",
+  "listening",
+  "transcribing",
+  "thinking",
+  "speaking",
+  "stopping",
+  "error",
+]);
+export type VoicePipelineState = z.infer<typeof VoicePipelineStateSchema>;
+
+export const AudioFormatSchema = z.object({
+  sampleRateHz: z.number().int().positive(),
+  channels: z.literal(1),
+  sampleFormat: z.literal("s16le"),
+});
+export type AudioFormat = z.infer<typeof AudioFormatSchema>;
+
+export const TranscriptionSchema = z.object({
+  text: z.string(),
+  language: LanguageCodeSchema,
+  languageProbability: z.number().min(0).max(1).optional(),
+  durationMs: z.number().nonnegative(),
+  inferenceMs: z.number().nonnegative(),
+});
+export type Transcription = z.infer<typeof TranscriptionSchema>;
+
+export const VoiceTurnMetricsSchema = z.object({
+  correlationId: z.string(),
+  speechDurationMs: z.number().nonnegative(),
+  vadMs: z.number().nonnegative(),
+  sttMs: z.number().nonnegative(),
+  agentMs: z.number().nonnegative(),
+  ttsMs: z.number().nonnegative(),
+  playbackStartMs: z.number().nonnegative(),
+  totalMs: z.number().nonnegative(),
+  interrupted: z.boolean(),
+  timestamp: z.string().datetime(),
+});
+export type VoiceTurnMetrics = z.infer<typeof VoiceTurnMetricsSchema>;
 
 export const AriaEnvironmentSchema = z.enum(["dev", "sim", "robot"]);
 export type AriaEnvironment = z.infer<typeof AriaEnvironmentSchema>;
@@ -55,9 +104,34 @@ export const ToolResultSchema = z.object({
   name: z.string(),
   ok: z.boolean(),
   result: z.unknown().optional(),
-  error: z.string().optional(),
+  /** Structured tool error; string retained for backward-compatible parsers. */
+  error: z.union([ToolErrorSchema, z.string()]).optional(),
 });
 export type ToolResult = z.infer<typeof ToolResultSchema>;
+
+/** One hit from a web search provider */
+export const WebSearchHitSchema = z.object({
+  title: z.string(),
+  url: z.string().url(),
+  snippet: z.string().default(""),
+});
+export type WebSearchHit = z.infer<typeof WebSearchHitSchema>;
+
+export const WebSearchResponseSchema = z.object({
+  query: z.string(),
+  hits: z.array(WebSearchHitSchema),
+  provider: z.string(),
+});
+export type WebSearchResponse = z.infer<typeof WebSearchResponseSchema>;
+
+/** Cleaned page content from a URL fetch */
+export const WebPageContentSchema = z.object({
+  url: z.string().url(),
+  title: z.string().default(""),
+  text: z.string(),
+  truncated: z.boolean().default(false),
+});
+export type WebPageContent = z.infer<typeof WebPageContentSchema>;
 
 export const LlmCompletionSchema = z.object({
   content: z.string(),

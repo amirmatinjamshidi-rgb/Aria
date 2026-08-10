@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { LanguageCode, ToolCall, ToolResult } from "./schemas.ts";
+import type { LanguageCode, ToolCall, ToolResult } from "./schemas.js";
 import {
   ChatMessageSchema,
   DetectedObjectSchema,
@@ -10,6 +10,9 @@ import {
   SkillStatusSchema,
   ToolCallSchema,
   ToolResultSchema,
+  TranscriptionSchema,
+  VoicePipelineStateSchema,
+  VoiceTurnMetricsSchema,
 } from "./schemas.js";
 
 /**
@@ -22,6 +25,11 @@ export const AriaEventType = {
   ConversationLlmCompletion: "conversation.llm_completion",
   ConversationToolCallRequested: "conversation.tool_call_requested",
   ConversationToolCallCompleted: "conversation.tool_call_completed",
+  VoiceStateChanged: "voice.state_changed",
+  VoiceSpeechStarted: "voice.speech_started",
+  VoiceTranscriptionCompleted: "voice.transcription_completed",
+  VoiceTurnMetrics: "voice.turn_metrics",
+  VoiceInterrupted: "voice.interrupted",
   GoalCreated: "goal.created",
   GoalCompleted: "goal.completed",
   GoalFailed: "goal.failed",
@@ -81,6 +89,56 @@ export const ToolCallCompletedEventSchema = z.object({
 });
 export type ToolCallCompletedEvent = z.infer<
   typeof ToolCallCompletedEventSchema
+>;
+
+export const VoiceStateChangedEventSchema = z.object({
+  type: z.literal(AriaEventType.VoiceStateChanged),
+  correlationId: z.string().optional(),
+  previous: VoicePipelineStateSchema,
+  current: VoicePipelineStateSchema,
+  timestamp: z.string().datetime(),
+});
+export type VoiceStateChangedEvent = z.infer<
+  typeof VoiceStateChangedEventSchema
+>;
+
+export const VoiceSpeechStartedEventSchema = z.object({
+  type: z.literal(AriaEventType.VoiceSpeechStarted),
+  correlationId: z.string(),
+  timestamp: z.string().datetime(),
+});
+export type VoiceSpeechStartedEvent = z.infer<
+  typeof VoiceSpeechStartedEventSchema
+>;
+
+export const VoiceTranscriptionCompletedEventSchema = z.object({
+  type: z.literal(AriaEventType.VoiceTranscriptionCompleted),
+  correlationId: z.string(),
+  transcription: TranscriptionSchema,
+  timestamp: z.string().datetime(),
+});
+export type VoiceTranscriptionCompletedEvent = z.infer<
+  typeof VoiceTranscriptionCompletedEventSchema
+>;
+
+export const VoiceTurnMetricsEventSchema = z.object({
+  type: z.literal(AriaEventType.VoiceTurnMetrics),
+  correlationId: z.string(),
+  metrics: VoiceTurnMetricsSchema,
+  timestamp: z.string().datetime(),
+});
+export type VoiceTurnMetricsEvent = z.infer<
+  typeof VoiceTurnMetricsEventSchema
+>;
+
+export const VoiceInterruptedEventSchema = z.object({
+  type: z.literal(AriaEventType.VoiceInterrupted),
+  correlationId: z.string().optional(),
+  reason: z.enum(["barge_in", "stop", "shutdown"]),
+  timestamp: z.string().datetime(),
+});
+export type VoiceInterruptedEvent = z.infer<
+  typeof VoiceInterruptedEventSchema
 >;
 
 export const GoalCreatedEventSchema = z.object({
@@ -172,6 +230,11 @@ export const AriaEventSchema = z.discriminatedUnion("type", [
   LlmCompletionEventSchema,
   ToolCallRequestedEventSchema,
   ToolCallCompletedEventSchema,
+  VoiceStateChangedEventSchema,
+  VoiceSpeechStartedEventSchema,
+  VoiceTranscriptionCompletedEventSchema,
+  VoiceTurnMetricsEventSchema,
+  VoiceInterruptedEventSchema,
   GoalCreatedEventSchema,
   GoalCompletedEventSchema,
   GoalFailedEventSchema,

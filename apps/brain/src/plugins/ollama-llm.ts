@@ -73,20 +73,30 @@ export class OllamaLlmProvider implements ILLMProvider {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const signal = options?.signal
+      ? AbortSignal.any([controller.signal, options.signal])
+      : controller.signal;
 
     try {
+      const url = `${this.options.baseUrl.replace(/\/$/, "")}/api/chat`;
+      // #region agent log
+      fetch('http://127.0.0.1:7428/ingest/11d91261-a0f9-451d-8c69-0c07ca2c5204',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8aa307'},body:JSON.stringify({sessionId:'8aa307',hypothesisId:'A',location:'ollama-llm.ts:generate',message:'ollama request start',data:{url,model:this.options.model},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       const response = await this.fetchImpl(
-        `${this.options.baseUrl.replace(/\/$/, "")}/api/chat`,
+        url,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
-          signal: controller.signal,
+          signal,
         },
       );
 
       if (!response.ok) {
         const detail = await response.text().catch(() => "");
+        // #region agent log
+        fetch('http://127.0.0.1:7428/ingest/11d91261-a0f9-451d-8c69-0c07ca2c5204',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8aa307'},body:JSON.stringify({sessionId:'8aa307',hypothesisId:'A',location:'ollama-llm.ts:generate',message:'ollama non-ok response',data:{status:response.status,detail:detail.slice(0,300)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         throw new Error(
           `Ollama chat failed (${response.status}): ${detail || response.statusText}`,
         );
@@ -114,7 +124,13 @@ export class OllamaLlmProvider implements ILLMProvider {
         finishReason: payload.done_reason === "length" ? "length" : "stop",
       };
     } catch (error: unknown) {
+      // #region agent log
+      fetch('http://127.0.0.1:7428/ingest/11d91261-a0f9-451d-8c69-0c07ca2c5204',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8aa307'},body:JSON.stringify({sessionId:'8aa307',hypothesisId:'A',location:'ollama-llm.ts:generate',message:'ollama generate failed',data:{name:error instanceof Error ? error.name : 'unknown',message:error instanceof Error ? error.message : String(error),cause:error instanceof Error && error.cause instanceof Error ? error.cause.message : String((error as {cause?: unknown})?.cause ?? '')},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       if (error instanceof Error && error.name === "AbortError") {
+        if (options?.signal?.aborted) {
+          throw error;
+        }
         throw new Error(
           `Ollama chat timed out after ${this.timeoutMs}ms (model=${this.options.model})`,
         );

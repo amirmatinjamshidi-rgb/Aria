@@ -9,7 +9,12 @@ export const TOKENS = {
   MemoryStore: Symbol.for("aria.memoryStore"),
   Personality: Symbol.for("aria.personality"),
   ToolRegistry: Symbol.for("aria.toolRegistry"),
+  ToolCatalog: Symbol.for("aria.toolCatalog"),
+  ToolExecutor: Symbol.for("aria.toolExecutor"),
   ToolSynthesizer: Symbol.for("aria.toolSynthesizer"),
+  ToolMetrics: Symbol.for("aria.toolMetrics"),
+  PermissionStore: Symbol.for("aria.permissionStore"),
+  SearchOrchestrator: Symbol.for("aria.searchOrchestrator"),
   ConversationPlanner: Symbol.for("aria.conversationPlanner"),
 } as const;
 

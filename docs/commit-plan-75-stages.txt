@@ -1,0 +1,45 @@
+
+STAGE 72 — Dashboard: gateway client + env
+Message: Add dashboard gateway client and public gateway URL config
+Files:
+  - apps/dashboard/.env.example
+  - apps/dashboard/next-env.d.ts
+  - apps/dashboard/package.json
+  - apps/dashboard/src/lib/gateway-client.ts
+==============================================================================
+STAGE 73 — Dashboard: robot face UI replacing NeuralOrb
+Message: Replace NeuralOrb with robot-face presence and scene wiring
+Files:
+  - apps/dashboard/src/app/globals.css
+  - apps/dashboard/src/app/layout.tsx
+  - apps/dashboard/src/components/AriaScene.tsx
+  - apps/dashboard/src/components/robot-face/RobotFace.tsx
+  - apps/dashboard/src/components/robot-face/expressions.ts
+  - apps/dashboard/src/components/robot-face/index.ts
+  - apps/dashboard/src/components/NeuralOrb.tsx   (DELETE)
+  - design-system/aria/MASTER.md
+  - design-system/aria/pages/robot-face.md
+==============================================================================
+
+
+Suggested batch runner (manual review still required)
+------------------------------------------------------
+Do NOT automate blindly if hunks mix concerns. Stages 56, 59, 70, 73, 75
+especially need a quick `git diff --cached` check.
+
+PowerShell sketch for a single stage (example stage 03):
+  git add -- packages/contracts/src/plugin-metadata.ts
+  git commit -m "Add shared PluginMetadata module for contract ports"
+
+If a stage's files are empty / already committed, skip that number and note it
+in this file as SKIPPED rather than inventing an empty commit.
+
+
+==============================================================================
+Post-plan checklist
+-------------------
+[ ] Stage 01 removed all tracked apps/dashboard/.next files
+[ ] `git check-ignore -v apps/dashboard/.next/cache/webpack/server-development/1.pack.gz` prints an ignore rule
+[ ] No *.pack.gz appear in `git status`
+[ ] `npm test` / targeted workspace tests pass after stages 33, 44, 60, 70, 71
+[ ] Optional: commit or delete .cursor/skills/ui-ux-pro-max outside this plan

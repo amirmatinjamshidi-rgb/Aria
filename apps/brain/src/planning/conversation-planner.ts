@@ -9,8 +9,8 @@ const IMPOSSIBLE_PATTERNS =
   /fly to mars|build a spaceship|hack into|disable safety|control motors directly|کنترل مستقیم موتور/i;
 
 /**
- * Phase 1 conversation planner: assess feasibility and validate tool calls.
- * Independent of any concrete LLM implementation.
+ * Conversation planner: assess feasibility and validate tool calls.
+ * Does not hardcode tool names — the catalog is the source of truth.
  */
 export class ConversationPlanner implements IConversationPlanner {
   assess(input: {
@@ -36,7 +36,9 @@ export class ConversationPlanner implements IConversationPlanner {
       };
     }
 
-    const toolNames = new Set(input.availableTools.map((t) => t.name));
+    const categories = new Set(
+      input.availableTools.map((t) => inferCategoryHint(t)),
+    );
     const steps: ConversationPlan["steps"][number][] = [
       {
         id: "respond-1",
@@ -45,34 +47,18 @@ export class ConversationPlanner implements IConversationPlanner {
       },
     ];
 
-    if (toolNames.has("get_current_time") && asksForTime(input.text)) {
+    if (input.availableTools.length > 0) {
       steps.push({
-        id: "tool-time",
+        id: "tools-available",
         kind: "tool",
-        toolName: "get_current_time",
-        rationale: "User asked for the current time",
-      });
-    }
-    if (toolNames.has("set_light") && asksForLight(input.text)) {
-      steps.push({
-        id: "tool-light",
-        kind: "tool",
-        toolName: "set_light",
-        rationale: "User asked to change a light",
-      });
-    }
-    if (toolNames.has("note_preference") && asksToNote(input.text)) {
-      steps.push({
-        id: "tool-note",
-        kind: "tool",
-        toolName: "note_preference",
-        rationale: "User asked to remember a preference",
+        rationale: `Catalog exposes ${input.availableTools.length} tools; LLM selects`,
+        categoryHint: [...categories].slice(0, 8).join(","),
       });
     }
 
     return {
       steps,
-      allowTools: true,
+      allowTools: input.availableTools.length > 0,
       rejected: false,
     };
   }
@@ -90,7 +76,11 @@ export class ConversationPlanner implements IConversationPlanner {
       readonly name: string;
       readonly arguments: Record<string, unknown>;
     }[];
-    readonly rejected: readonly { readonly name: string; readonly reason: string }[];
+    readonly rejected: readonly {
+      readonly name: string;
+      readonly reason: string;
+      readonly code?: string;
+    }[];
   } {
     const known = new Set(availableTools.map((t) => t.name));
     const accepted: {
@@ -98,7 +88,7 @@ export class ConversationPlanner implements IConversationPlanner {
       name: string;
       arguments: Record<string, unknown>;
     }[] = [];
-    const rejected: { name: string; reason: string }[] = [];
+    const rejected: { name: string; reason: string; code?: string }[] = [];
     const seen = new Set<string>();
 
     for (const call of toolCalls) {
@@ -107,13 +97,18 @@ export class ConversationPlanner implements IConversationPlanner {
         rejected.push({
           name: call.name,
           reason: "Duplicate tool call in the same turn",
+          code: "DUPLICATE",
         });
         continue;
       }
       seen.add(dedupeKey);
 
       if (!known.has(call.name)) {
-        rejected.push({ name: call.name, reason: "Unknown tool" });
+        rejected.push({
+          name: call.name,
+          reason: "Unknown tool",
+          code: "UNKNOWN_TOOL",
+        });
         continue;
       }
       accepted.push(call);
@@ -123,16 +118,17 @@ export class ConversationPlanner implements IConversationPlanner {
   }
 }
 
-function asksForTime(text: string): boolean {
-  return /what time|current time|ساعت|time is it/i.test(text);
-}
-
-function asksForLight(text: string): boolean {
-  return /light|lamp|چراغ|لامپ| i want to turn on the light| i want to turn off the light| i want to change the light| i want to turn on the light in the living room| i want to turn off the light in the living room| i want to change the light in the living room| i want to turn on the light in the kitchen| i want to turn off the light in the kitchen| i want to change the light in the kitchen| i want to turn on the light in the bedroom| i want to turn off the light in the bedroom| i want to change the light in the bedroom/i.test(text);
-}
-
-function asksToNote(text: string): boolean {
-  return /remember|prefer|یادداشت|یادت|ترجیح| i prefer|i like| i want to remember| i want to prefer| i want to note| i want to remember this| i want to prefer this| i want to note this/i.test(text);
+function inferCategoryHint(tool: ToolDefinition): string {
+  const name = tool.name;
+  if (name.startsWith("search_") || name === "web_search" || name === "fetch_page") {
+    return "Search";
+  }
+  if (name.includes("memory") || name.includes("preference") || name.includes("fact") || name.includes("summary")) {
+    return "Memory";
+  }
+  if (name.includes("time")) return "Time";
+  if (name.includes("light")) return "SmartHome";
+  return "General";
 }
 
 function stableArgsKey(args: Record<string, unknown>): string {
