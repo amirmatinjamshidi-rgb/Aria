@@ -11,6 +11,9 @@ This directory holds ADRs for Aria. Every significant architectural choice gets 
 | [0005](0005-ollama-llm-runtime.md) | Ollama as primary local LLM runtime | Accepted |
 | [0006](0006-phase1-brain-quality.md) | Phase 1 brain quality stack | Accepted |
 | [0007](0007-openrouter-llm-provider.md) | OpenRouter optional online LLM | Accepted |
+| [0008](0008-web-interaction-gateway.md) | Web interaction gateway | Accepted |
+| [0009](0009-web-search-fetch-tools.md) | Web search and page fetch tools | Accepted |
+| [0010](0010-tool-platform.md) | Tool Platform (registry, executor, search) | Accepted |
 
 ## Template
 

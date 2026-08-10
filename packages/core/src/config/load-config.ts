@@ -51,6 +51,18 @@ export const AriaConfigSchema = z.object({
       maxRounds: z.number().int().min(0).max(8).default(3),
     })
     .default({}),
+  /** Optional online web tools — off by default (local-first) */
+  web: z
+    .object({
+      enabled: z.boolean().default(false),
+      searchProvider: z.enum(["mock", "duckduckgo"]).default("mock"),
+      /** Comma-separated provider ids; defaults derived from searchProvider */
+      searchProviders: z.array(z.string().min(1)).default([]),
+      timeoutMs: z.number().int().positive().default(15_000),
+      maxResults: z.number().int().min(1).max(10).default(5),
+      maxPageChars: z.number().int().positive().default(8_000),
+    })
+    .default({}),
 });
 
 export type AriaConfig = z.infer<typeof AriaConfigSchema>;
@@ -119,6 +131,26 @@ export function loadConfig(
           : env["ARIA_TOOLS_ENABLED"] !== "false",
       maxRounds: env["ARIA_TOOLS_MAX_ROUNDS"]
         ? Number(env["ARIA_TOOLS_MAX_ROUNDS"])
+        : undefined,
+    },
+    web: {
+      enabled:
+        env["ARIA_WEB_ENABLED"] === undefined
+          ? undefined
+          : env["ARIA_WEB_ENABLED"].trim() === "true",
+      searchProvider: env["ARIA_WEB_SEARCH_PROVIDER"]?.trim(),
+      searchProviders: env["ARIA_SEARCH_PROVIDERS"]
+        ?.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      timeoutMs: env["ARIA_WEB_TIMEOUT_MS"]
+        ? Number(env["ARIA_WEB_TIMEOUT_MS"])
+        : undefined,
+      maxResults: env["ARIA_WEB_MAX_RESULTS"]
+        ? Number(env["ARIA_WEB_MAX_RESULTS"])
+        : undefined,
+      maxPageChars: env["ARIA_WEB_MAX_PAGE_CHARS"]
+        ? Number(env["ARIA_WEB_MAX_PAGE_CHARS"])
         : undefined,
     },
   });

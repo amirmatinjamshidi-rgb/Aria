@@ -5,7 +5,7 @@ import { BrowserPcmStreamer } from "@/lib/browser-pcm";
 import { AriaGatewaySession } from "@/lib/gateway-client";
 import type { AriaUiState, TranscriptLine } from "@/lib/types";
 import { ChatDock } from "./ChatDock";
-import { NeuralOrb } from "./NeuralOrb";
+import { expressionFromUiState, RobotFace } from "./robot-face";
 import { StatusLine } from "./StatusLine";
 import { TranscriptStrip } from "./TranscriptStrip";
 
@@ -95,6 +95,8 @@ export function AriaScene() {
     setMicActive(false);
   };
 
+  const face = expressionFromUiState(state);
+
   return (
     <main className="scene">
       <div className="atmosphere" aria-hidden />
@@ -104,7 +106,11 @@ export function AriaScene() {
       </header>
 
       <section className="orb-stage" aria-label="Aria presence">
-        <NeuralOrb state={state} amplitude={amplitude} />
+        <RobotFace
+          expression={face.expression}
+          speaking={face.speaking}
+          amplitude={amplitude}
+        />
         <TranscriptStrip lines={lines} />
       </section>
 

@@ -1,20 +1,21 @@
 import type { Metadata } from "next";
-import { Fraunces, Sora } from "next/font/google";
+import { Fira_Code, Share_Tech_Mono } from "next/font/google";
 import "./globals.css";
 
-const display = Fraunces({
+const display = Share_Tech_Mono({
+  weight: "400",
   subsets: ["latin"],
   variable: "--font-display-loaded",
 });
 
-const body = Sora({
+const body = Fira_Code({
   subsets: ["latin"],
   variable: "--font-body-loaded",
 });
 
 export const metadata: Metadata = {
   title: "Aria",
-  description: "Talk with Aria — neural presence UI",
+  description: "Talk with Aria — cybernetic presence UI",
 };
 
 export default function RootLayout({
