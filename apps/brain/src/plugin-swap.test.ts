@@ -10,6 +10,7 @@ import { createBrainContainer, resolveBrainPorts } from "./composition-root.js";
 import { PersonalityService } from "./personality/personality-service.js";
 import { ConversationPlanner } from "./planning/conversation-planner.js";
 import { OllamaLlmProvider } from "./plugins/ollama-llm.js";
+import { OpenRouterLlmProvider } from "./plugins/openrouter-llm.js";
 import { SessionMemoryStore } from "./memory/session-memory-store.js";
 import { createDefaultToolRegistry } from "./tools/create-default-tools.js";
 import { ToolResultSynthesizer } from "./tools/tool-result-synthesizer.js";
@@ -88,6 +89,15 @@ describe("LLM provider hot-swap", () => {
     );
     expect(providerId).toBe("echo");
     expect(reply).toBe("پژواک: سلام");
+  });
+
+  it("rejects openrouter without an API key", async () => {
+    await expect(
+      createBrainContainer({
+        ARIA_LLM_PROVIDER: "openrouter",
+        ARIA_LOG_LEVEL: "error",
+      }),
+    ).rejects.toThrow(/ARIA_OPENROUTER_API_KEY/);
   });
 });
 
@@ -280,5 +290,184 @@ describe("OllamaLlmProvider", () => {
     };
     expect(body.model).toBe("qwen3.5:latest");
     expect(body.tools).toHaveLength(1);
+  });
+
+  it("propagates caller cancellation for voice barge-in", async () => {
+    const fetchImpl = vi.fn(
+      async (
+        _input: string | URL | Request,
+        init?: RequestInit,
+      ): Promise<Response> =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("cancelled", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    const provider = new OllamaLlmProvider({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3.5:latest",
+      fetchImpl,
+    });
+    const controller = new AbortController();
+    const generation = provider.generate(
+      [{ role: "user", content: "keep talking" }],
+      { signal: controller.signal },
+    );
+
+    controller.abort();
+
+    await expect(generation).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("OpenRouterLlmProvider adapter", () => {
+  it("maps OpenAI-compatible tool calls and auth headers", async () => {
+    const fetchImpl = vi.fn(
+      async (
+        _input: string | URL | Request,
+        _init?: RequestInit,
+      ): Promise<Response> =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "call_1",
+                      type: "function",
+                      function: {
+                        name: "get_current_time",
+                        arguments: '{"timezone":"UTC"}',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: "tool_calls",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+
+    const provider = new OpenRouterLlmProvider({
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "sk-or-test",
+      model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+      httpReferer: "https://example.com/aria",
+      appTitle: "Aria",
+      fetchImpl,
+    });
+
+    const completion = await provider.generate(
+      [{ role: "user", content: "time?" }],
+      {
+        tools: [
+          {
+            name: "get_current_time",
+            description: "time",
+            parameters: { type: "object", properties: {} },
+          },
+        ],
+      },
+    );
+
+    expect(completion.finishReason).toBe("tool_calls");
+    expect(completion.toolCalls[0]).toEqual({
+      id: "call_1",
+      name: "get_current_time",
+      arguments: { timezone: "UTC" },
+    });
+
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toBe(
+      "https://openrouter.ai/api/v1/chat/completions",
+    );
+    expect(init?.headers).toEqual(
+      expect.objectContaining({
+        Authorization: "Bearer sk-or-test",
+        "HTTP-Referer": "https://example.com/aria",
+        "X-Title": "Aria",
+      }),
+    );
+
+    const body = JSON.parse(String(init?.body)) as {
+      model: string;
+      tools: unknown[];
+    };
+    expect(body.model).toBe("nvidia/nemotron-3-ultra-550b-a55b:free");
+    expect(body.tools).toHaveLength(1);
+  });
+
+  it("returns plain text completions", async () => {
+    const fetchImpl = vi.fn(
+      async (): Promise<Response> =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: "<think>skip</think>Hello from Nemotron",
+                },
+                finish_reason: "stop",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+
+    const provider = new OpenRouterLlmProvider({
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "sk-or-test",
+      model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+      fetchImpl,
+    });
+
+    const completion = await provider.generate([
+      { role: "user", content: "hi" },
+    ]);
+
+    expect(completion.content).toBe("Hello from Nemotron");
+    expect(completion.finishReason).toBe("stop");
+    expect(completion.toolCalls).toEqual([]);
+  });
+
+  it("propagates caller cancellation for voice barge-in", async () => {
+    const fetchImpl = vi.fn(
+      async (
+        _input: string | URL | Request,
+        init?: RequestInit,
+      ): Promise<Response> =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("cancelled", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    const provider = new OpenRouterLlmProvider({
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "sk-or-test",
+      model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+      fetchImpl,
+    });
+    const controller = new AbortController();
+    const generation = provider.generate(
+      [{ role: "user", content: "keep talking" }],
+      { signal: controller.signal },
+    );
+
+    controller.abort();
+
+    await expect(generation).rejects.toMatchObject({ name: "AbortError" });
   });
 });
