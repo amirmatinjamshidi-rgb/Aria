@@ -2,7 +2,7 @@
   "name": "@aria/dashboard",
   "version": "0.1.0",
   "private": true,
-  "description": "Aria web interaction surface — neural orb UI over the voice gateway",
+  "description": "Aria web interaction surface — cybernetic robot face UI over the voice gateway",
   "type": "module",
   "scripts": {
     "dev": "next dev --port 3000",
