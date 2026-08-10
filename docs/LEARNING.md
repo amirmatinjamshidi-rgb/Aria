@@ -6,7 +6,7 @@ Learn **just in time** with each phase. Depth over breadth. Build a small practi
 
 ## 1. TypeScript Architecture & Node.js Backend
 
-**Status:** 🟡 IN PROGRESS — started 2026-07-29. Practice kata scaffolded at [`practice/tiny-core`](../practice/tiny-core/README.md) (23 red tests to turn green).
+**Status:** 🟡 IN PROGRESS — started 2026-02-29. Practice kata scaffolded at [`practice/tiny-core`](../practice/tiny-core/README.md) (23 red tests to turn green).
 
 **Why:** Entire cognition stack is TypeScript; architecture quality determines long-term survival.
 
