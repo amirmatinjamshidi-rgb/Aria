@@ -51,6 +51,11 @@ npm run start -w @aria/brain
 
 # Interactive REPL chat (type your own questions)
 npm run chat -w @aria/brain
+
+# Web UI (neural orb) — needs voice sidecar + voice:web
+npm run voice:sidecar
+npm run voice:web
+npm run dashboard
 ```
 
 Swap the LLM provider without touching brain code:
@@ -59,12 +64,25 @@ Swap the LLM provider without touching brain code:
 # ARIA_LLM_PROVIDER=mock   (default — offline + tools)
 # ARIA_LLM_PROVIDER=echo
 # ARIA_LLM_PROVIDER=ollama + ARIA_OLLAMA_MODEL=qwen3.5:latest
+# ARIA_LLM_PROVIDER=openrouter + ARIA_OPENROUTER_API_KEY=...
 npm run chat -w @aria/brain
 
 # Offline quality gate + latency sample (mock by default)
 npm run eval -w @aria/brain
 npm run bench -w @aria/brain
 ```
+
+Run the continuous Phase 2 voice pipeline after installing the Python sidecar,
+FFmpeg, Piper, and bilingual voice models:
+
+```bash
+npm run voice:sidecar
+# In a second terminal:
+npm run voice
+```
+
+See [`apps/voice/README.md`](apps/voice/README.md) for Windows microphone setup,
+model paths, barge-in behavior, and latency metrics.
 
 ## Documentation
 
