@@ -29,6 +29,7 @@
   "dependencies": {
     "@aria/contracts": "*",
     "@aria/core": "*",
+    "@aria/tool-runtime": "*",
     "zod": "^3.24.1"
   },
   "devDependencies": {
