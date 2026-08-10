@@ -1,4 +1,9 @@
-import type { ILLMProvider, IMessageBus, IMemoryStore } from "@aria/contracts";
+import type {
+  ILLMProvider,
+  IMessageBus,
+  IMemoryStore,
+  PermissionId,
+} from "@aria/contracts";
 import {
   ConsoleLogger,
   Container,
@@ -10,6 +15,16 @@ import {
   type AriaConfig,
   type Logger,
 } from "@aria/core";
+import {
+  CatalogToolResultSynthesizer,
+  ConfirmationGate,
+  defaultGrantedPermissions,
+  InMemoryPermissionStore,
+  PermissionGate,
+  ToolExecutor,
+  ToolMetricsCollector,
+  type ToolRegistry,
+} from "@aria/tool-runtime";
 import { SessionMemoryStore } from "./memory/session-memory-store.js";
 import type { MetricsCollector } from "./metrics/turn-timer.js";
 import { PersonalityService } from "./personality/personality-service.js";
@@ -19,9 +34,8 @@ import { MockLlmProvider } from "./plugins/mock-llm.js";
 import { OllamaLlmProvider } from "./plugins/ollama-llm.js";
 import { OpenRouterLlmProvider } from "./plugins/openrouter-llm.js";
 import { ConversationService } from "./services/conversation-service.js";
-import { createDefaultToolRegistry } from "./tools/create-default-tools.js";
-import { ToolResultSynthesizer } from "./tools/tool-result-synthesizer.js";
-import type { ToolRegistry } from "./tools/tool-registry.js";
+import { registerBuiltinTools } from "./tools/register-builtin-tools.js";
+import { createWebToolBackends } from "./web/create-web-backends.js";
 
 /**
  * Composition root for the brain service.
@@ -95,10 +109,52 @@ export async function createBrainContainer(
   }
 
   const personality = new PersonalityService(config.personality);
-  const tools = createDefaultToolRegistry();
-  const synthesizer = new ToolResultSynthesizer();
-  const planner = new ConversationPlanner();
   const memory: IMemoryStore = new SessionMemoryStore();
+
+  const webBackends = config.web?.enabled
+    ? createWebToolBackends(config)
+    : undefined;
+  if (webBackends) {
+    logger.info("Web tools enabled", {
+      searchProviders: webBackends.providers.list().map((p) => p.metadata.id),
+      fetchProvider: webBackends.fetch.metadata.id,
+    });
+  }
+
+  const historyRef: { current: ConversationService | undefined } = {
+    current: undefined,
+  };
+
+  const toolsBundle = registerBuiltinTools({
+    memory,
+    historyProvider: () => historyRef.current?.getHistory() ?? [],
+    search: webBackends
+      ? {
+          orchestrator: webBackends.orchestrator,
+          fetch: webBackends.fetch,
+          maxResults: config.web.maxResults,
+        }
+      : undefined,
+    includePlannedStubs: true,
+  });
+
+  const granted: PermissionId[] = defaultGrantedPermissions({
+    webEnabled: Boolean(webBackends),
+  });
+  const permissionStore = new InMemoryPermissionStore(granted);
+  const permissionGate = new PermissionGate();
+  const confirmationGate = new ConfirmationGate();
+  const toolMetrics = new ToolMetricsCollector();
+
+  const executor = new ToolExecutor({
+    registry: toolsBundle.registry,
+    permissionGate,
+    confirmationGate,
+    metrics: toolMetrics,
+  });
+
+  const synthesizer = new CatalogToolResultSynthesizer(toolsBundle.formatters);
+  const planner = new ConversationPlanner();
 
   const container = new Container();
   container.registerInstance(TOKENS.Config, config);
@@ -107,8 +163,18 @@ export async function createBrainContainer(
   container.registerInstance(TOKENS.LlmProvider, llm);
   container.registerInstance(TOKENS.MemoryStore, memory);
   container.registerInstance(TOKENS.Personality, personality);
-  container.registerInstance(TOKENS.ToolRegistry, tools);
+  container.registerInstance(TOKENS.ToolRegistry, toolsBundle.registry);
+  container.registerInstance(TOKENS.ToolCatalog, toolsBundle.catalog);
+  container.registerInstance(TOKENS.ToolExecutor, executor);
   container.registerInstance(TOKENS.ToolSynthesizer, synthesizer);
+  container.registerInstance(TOKENS.ToolMetrics, toolMetrics);
+  container.registerInstance(TOKENS.PermissionStore, permissionStore);
+  if (webBackends) {
+    container.registerInstance(
+      TOKENS.SearchOrchestrator,
+      webBackends.orchestrator,
+    );
+  }
   container.registerInstance(TOKENS.ConversationPlanner, planner);
 
   const conversation = new ConversationService(
@@ -116,15 +182,18 @@ export async function createBrainContainer(
     bus,
     logger.child({ component: "conversation" }),
     personality,
-    tools,
+    toolsBundle.catalog,
+    executor,
     synthesizer,
     planner,
     memory,
     {
       toolsEnabled: config.tools.enabled,
       maxToolRounds: config.tools.maxRounds,
+      grantedPermissions: permissionStore.getGranted(),
     },
   );
+  historyRef.current = conversation;
 
   return { container, config, conversation };
 }
