@@ -13,7 +13,9 @@ import {
   createToolCallCompleted,
   createToolCallRequested,
   createUserUtterance,
+  createVisionSceneUpdated,
   GoalSchema,
+  VisionSceneUpdatedEventSchema,
 } from "../src/index.js";
 
 describe("@aria/contracts", () => {
@@ -110,5 +112,24 @@ describe("@aria/contracts", () => {
       truncated: false,
     });
     expect(page.text).toBe("Hello");
+  });
+
+  it("validates vision.scene_updated events", () => {
+    const event = createVisionSceneUpdated(
+      [
+        {
+          id: "det-1",
+          label: "person",
+          confidence: 0.9,
+          bbox: { x: 0.1, y: 0.1, width: 0.2, height: 0.5 },
+          trackId: "track-1",
+        },
+      ],
+      "vision-1",
+      { frameId: "f1", description: "a person" },
+    );
+    const parsed = VisionSceneUpdatedEventSchema.parse(event);
+    expect(parsed.type).toBe(AriaEventType.VisionSceneUpdated);
+    expect(parsed.objects[0]?.trackId).toBe("track-1");
   });
 });

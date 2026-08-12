@@ -173,7 +173,9 @@ export const DetectedObjectSchema = z.object({
   label: z.string(),
   confidence: z.number().min(0).max(1),
   bbox: BoundingBoxSchema,
-  trackId: z.string().optional(),
+  trackId: z.string().nullish(),
+  /** Optional sidecar mask / segment reference (on-demand SAM2). */
+  maskRef: z.string().nullish(),
 });
 export type DetectedObject = z.infer<typeof DetectedObjectSchema>;
 

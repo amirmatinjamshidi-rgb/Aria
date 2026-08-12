@@ -156,15 +156,15 @@ Graph memory; user multi-profile
 Scene understanding from a webcam feeding the world model
 
 ### Deliverables
-- YOLO11, SAM2, MediaPipe, Qwen2.5-VL sidecars
-- `IVisionProvider` facade + tracking
+- Gemini API vision provider (free-tier image understanding) + optional YOLO26 sidecar
+- Webcam capture sidecar (OpenCV) + `IVisionProvider` facade + tracking
 - Privacy-aware optional face recognition (opt-in)
 
 ### Skills
-OpenCV, YOLO, VLM prompting
+OpenCV, Gemini multimodal prompting, YOLO (optional local)
 
 ### Technologies
-Ultralytics YOLO11, SAM2, MediaPipe, Qwen2.5-VL
+Gemini API (image/video understanding), Ultralytics YOLO26 (optional), MediaPipe, OpenCV
 
 ### Acceptance criteria
 - Accurate "what do you see?" from webcam

@@ -1,0 +1,32 @@
+{
+  "label": "bottle",
+  "frames": [
+    {
+      "id": "frame-0",
+      "bbox": {
+        "x": 0.1,
+        "y": 0.2,
+        "width": 0.1,
+        "height": 0.3
+      }
+    },
+    {
+      "id": "frame-1",
+      "bbox": {
+        "x": 0.1,
+        "y": 0.2,
+        "width": 0.1,
+        "height": 0.3
+      }
+    },
+    {
+      "id": "frame-2",
+      "bbox": {
+        "x": 0.1,
+        "y": 0.2,
+        "width": 0.1,
+        "height": 0.3
+      }
+    }
+  ]
+}

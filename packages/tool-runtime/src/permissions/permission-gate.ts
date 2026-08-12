@@ -85,6 +85,7 @@ export class ConfirmationGate implements IConfirmationGate {
 /** Default permissions for a local assistant session. */
 export function defaultGrantedPermissions(options?: {
   readonly webEnabled?: boolean;
+  readonly visionEnabled?: boolean;
 }): PermissionId[] {
   const perms: PermissionId[] = [
     "time.read",
@@ -94,6 +95,9 @@ export function defaultGrantedPermissions(options?: {
   ];
   if (options?.webEnabled) {
     perms.push("search.web", "search.fetch", "search.wikipedia");
+  }
+  if (options?.visionEnabled !== false) {
+    perms.push("vision");
   }
   return perms;
 }

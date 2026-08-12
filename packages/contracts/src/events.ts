@@ -184,6 +184,9 @@ export const VisionSceneUpdatedEventSchema = z.object({
   correlationId: z.string(),
   objects: z.array(DetectedObjectSchema),
   description: z.string().optional(),
+  frameId: z.string().optional(),
+  /** mock = synthetic fixtures; live = real camera/models */
+  source: z.enum(["mock", "live"]).optional(),
   timestamp: z.string().datetime(),
 });
 export type VisionSceneUpdatedEvent = z.infer<
@@ -303,6 +306,26 @@ export function createToolCallCompleted(
     type: AriaEventType.ConversationToolCallCompleted,
     correlationId,
     result,
+    timestamp: nowIso(),
+  };
+}
+
+export function createVisionSceneUpdated(
+  objects: VisionSceneUpdatedEvent["objects"],
+  correlationId: string,
+  options: {
+    readonly description?: string;
+    readonly frameId?: string;
+    readonly source?: "mock" | "live";
+  } = {},
+): VisionSceneUpdatedEvent {
+  return {
+    type: AriaEventType.VisionSceneUpdated,
+    correlationId,
+    objects,
+    description: options.description,
+    frameId: options.frameId,
+    source: options.source,
     timestamp: nowIso(),
   };
 }

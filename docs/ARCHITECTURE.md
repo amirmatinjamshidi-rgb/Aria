@@ -29,7 +29,7 @@ flowchart TB
         planner[planner: BT plus GOAP]
     end
     subgraph perception [Perception Layer]
-        vision[vision: YOLO SAM2 VLM]
+        vision[vision: Gemini / YOLO]
     end
     subgraph execution [Execution Layer]
         smarthome[smart-home]
@@ -87,7 +87,8 @@ Defined in `@aria/contracts`:
 - `IPermissionStore` / `IPermissionGate` — tool permission grants
 - `ISTTProvider` — Faster-Whisper / alternatives
 - `ITTSProvider` — Piper / alternatives
-- `IVisionProvider` — YOLO+SAM2+VLM facade
+- `IVisionProvider` — Gemini (default) or YOLO26+SAM2+VLM facade
+- `IVisionSceneStore` — latest scene world model
 - `IMemoryStore` — session store now; ChromaDB in Phase 3
 - `IMessageBus` — in-process / NATS
 - `IRobotSkill` — sim or real skill implementations
@@ -109,8 +110,9 @@ agent work, and playback so detected speech can cancel a stale turn or stop
 playback (barge-in).
 
 The web interaction surface (`apps/dashboard`) connects through the voice web
-gateway (`npm run voice:web`): text turns and browser PCM share the same
-pipeline and bus (ADR-0008).
+gateway (`npm run voice:web`): text turns, browser PCM, and the vision scene loop
+share the same process bus (ADR-0008). Camera frames come from the vision sidecar
+(OpenCV), not the browser tab.
 
 Audio is 16 kHz, mono, signed 16-bit little-endian PCM. Capture and VAD are
 streaming; Faster-Whisper receives a complete VAD-segmented utterance. This is
@@ -129,7 +131,12 @@ Optional search tools (`search_web`, `search_wikipedia`, `fetch_page`, …) regi
 
 ### Vision
 
-Camera → Detection → Segmentation → Tracking → VLM → `vision.scene_updated` → Planner / Brain
+Camera (OpenCV sidecar) → Gemini detect/describe (default) **or** YOLO26 track →
+optional SAM2 → `vision.scene_updated` → Planner / Brain
+
+Default cloud CV: Gemini free-tier image understanding
+([docs](https://ai.google.dev/gemini-api/docs/image-understanding)).
+Local YOLO path remains via `ARIA_VISION_PROVIDER=sidecar`. Face recognition stays PRIVATE / opt-in.
 
 ### Action
 

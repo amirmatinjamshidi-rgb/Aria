@@ -26,6 +26,7 @@
     "@aria/brain": "*",
     "@aria/contracts": "*",
     "@aria/core": "*",
+    "@aria/vision": "*",
     "dotenv": "^17.4.2",
     "ws": "^8.21.2",
     "zod": "^3.24.1"

@@ -128,22 +128,30 @@ Copy-Item apps/voice/.env.example .env -ErrorAction SilentlyContinue
 npm run voice
 ```
 
-### Web UI (gateway + dashboard)
+### Web UI (gateway + dashboard + vision)
 
-For the browser interaction surface (neural orb + text + optional browser mic):
+For the browser interaction surface (neural orb + text + optional browser mic
++ camera scene understanding). Default CV is **Gemini**
+([image understanding](https://ai.google.dev/gemini-api/docs/image-understanding));
+webcam capture still uses the local OpenCV sidecar.
 
 ```powershell
-# Terminal 2 alternative — brain + voice + HTTP/WS gateway on :8787
+# Terminal A — OpenCV capture sidecar (:8766)
+npm run vision:sidecar
+
+# Terminal B — brain + voice + vision loop + HTTP/WS gateway on :8787
+# Requires ARIA_GEMINI_API_KEY + ARIA_VISION_PROVIDER=gemini in apps/vision/.env
 npm run voice:web
 
-# Terminal 3 — Next.js UI
+# Terminal C — Next.js UI
 npm run dashboard
 ```
 
-Set `ARIA_AUDIO_SOURCE=ffmpeg+browser` (see `.env.example`) so system mic and
-browser push-to-talk both work. Open `http://localhost:3000`. Details:
-[`apps/dashboard/README.md`](../dashboard/README.md) and
-[ADR-0008](../../docs/adrs/0008-web-interaction-gateway.md).
+Ask “what do you see?” in the chat dock. Status line shows live scene labels.
+Detection uses the **system webcam** via the vision sidecar (not the browser
+camera tab permission). Get a free API key at https://aistudio.google.com/apikey.
+If you see `MOCK (not camera): person, cup`, restart the vision sidecar without
+`ARIA_VISION_SIDECAR_MODE=mock`. Set `ARIA_VISION_ENABLED=false` to disable the loop.
 
 Press `Ctrl+C` for a graceful stop. Use headphones for early barge-in tests
 (no acoustic echo cancellation yet).
