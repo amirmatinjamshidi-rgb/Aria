@@ -11,6 +11,7 @@ import {
   ToolRegistry,
   ToolResultFormatterRegistry,
 } from "@aria/tool-runtime";
+import type { VisionPortsBag } from "../vision/vision-ports.js";
 import {
   ConversationSummaryTool,
   ForgetFactTool,
@@ -30,6 +31,7 @@ import {
 import { SetLightTool } from "./modules/smart-home/set-light.js";
 import { createPlannedStubTools } from "./modules/stubs/planned-stubs.js";
 import { GetCurrentTimeTool } from "./modules/time/get-current-time.js";
+import { createVisionTools } from "./modules/vision/vision-tools.js";
 import { createBuiltinFormatters } from "./result-formatters/builtin-formatters.js";
 
 export interface BuiltinToolsOptions {
@@ -40,6 +42,7 @@ export interface BuiltinToolsOptions {
     readonly fetch: IWebPageFetcher;
     readonly maxResults?: number;
   };
+  readonly vision?: VisionPortsBag;
   /** Include planned stub tools in the registry (disabled). Default true. */
   readonly includePlannedStubs?: boolean;
 }
@@ -92,6 +95,10 @@ export function registerBuiltinTools(
         enableStubs: true,
       }),
     );
+  }
+
+  if (options.vision) {
+    tools.push(...createVisionTools(options.vision));
   }
 
   if (options.includePlannedStubs !== false) {

@@ -102,14 +102,10 @@ export function createPlannedStubTools(): ITool[] {
     stub("media.next", "next_track", "Media", "Skip to next track.", ["media"]),
     stub("media.volume", "volume", "Media", "Set media volume.", ["media"]),
 
-    // Vision (interfaces only)
-    stub("vision.detect_objects", "detect_objects", "Vision", "Detect objects in a camera frame.", ["vision"]),
-    stub("vision.detect_people", "detect_people", "Vision", "Detect people in a camera frame.", ["vision"]),
-    stub("vision.describe_scene", "describe_scene", "Vision", "Describe the current scene.", ["vision"]),
+    // Vision (OCR / barcode / faces stay planned — faces are PRIVATE opt-in)
     stub("vision.ocr", "ocr", "Ocr", "Run OCR on an image.", ["vision"]),
     stub("vision.barcode", "barcode_scan", "Vision", "Scan barcodes.", ["vision"]),
-    stub("vision.find_object", "find_object", "Vision", "Find an object in view.", ["vision"]),
-    stub("vision.faces", "recognize_faces", "Vision", "Recognize faces.", ["vision"], "PRIVATE"),
+    stub("vision.faces", "recognize_faces", "Vision", "Recognize faces (opt-in PRIVATE only).", ["vision"], "PRIVATE"),
 
     // Robot (interfaces only — actuators require confirmation)
     stub("robot.move_arm", "move_arm", "Robot", "Move a robot arm.", ["robot.actuator"], "DANGEROUS"),
