@@ -20,6 +20,8 @@
     "voice": "npm run dev -w @aria/voice",
     "voice:web": "npm run web -w @aria/voice",
     "voice:sidecar": "node scripts/run-voice-sidecar.mjs",
+    "vision": "npm run dev -w @aria/vision",
+    "vision:sidecar": "node scripts/run-vision-sidecar.mjs",
     "dashboard": "npm run dev -w @aria/dashboard",
     "lint": "turbo run lint",
     "test": "turbo run test",

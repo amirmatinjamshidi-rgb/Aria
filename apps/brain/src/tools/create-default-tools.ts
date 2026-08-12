@@ -6,6 +6,7 @@ import type {
   IWebSearchProvider,
 } from "@aria/contracts";
 import { asSearchProvider } from "@aria/contracts";
+import { InMemoryVisionSceneStore } from "@aria/core";
 import {
   SearchOrchestrator,
   SearchProviderRegistry,
@@ -13,6 +14,8 @@ import {
   type ToolRegistry,
 } from "@aria/tool-runtime";
 import { SessionMemoryStore } from "../memory/session-memory-store.js";
+import { BrainMockVisionProvider } from "../vision/mock-vision-provider.js";
+import type { VisionPortsBag } from "../vision/vision-ports.js";
 import { registerBuiltinTools } from "./register-builtin-tools.js";
 
 export interface DefaultToolsOptions {
@@ -24,6 +27,7 @@ export interface DefaultToolsOptions {
   readonly memory?: IMemoryStore;
   readonly historyProvider?: () => readonly ChatMessage[];
   readonly includePlannedStubs?: boolean;
+  readonly includeVision?: boolean;
 }
 
 /**
@@ -54,10 +58,18 @@ export function createDefaultToolRegistry(
     };
   }
 
+  const vision: VisionPortsBag | undefined = options.includeVision
+    ? {
+        provider: new BrainMockVisionProvider(),
+        sceneStore: new InMemoryVisionSceneStore(),
+      }
+    : undefined;
+
   const bundle = registerBuiltinTools({
     memory,
     historyProvider: options.historyProvider,
     search,
+    vision,
     includePlannedStubs: options.includePlannedStubs ?? false,
   });
 
@@ -78,6 +90,7 @@ export function createDefaultToolRegistry(
         "search.web",
         "search.fetch",
         "search.wikipedia",
+        "vision",
       ]),
       confirmationToken: context.confirmationToken,
       userId: context.userId,

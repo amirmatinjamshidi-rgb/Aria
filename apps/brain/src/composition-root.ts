@@ -2,11 +2,16 @@ import type {
   ILLMProvider,
   IMessageBus,
   IMemoryStore,
+  IVisionProvider,
+  IVisionSceneStore,
   PermissionId,
-} from "@aria/contracts";
+  VisionSceneUpdatedEvent,
+} from '@aria/contracts';
+import { AriaEventType } from '@aria/contracts';
 import {
   ConsoleLogger,
   Container,
+  InMemoryVisionSceneStore,
   InProcessMessageBus,
   NatsMessageBus,
   PluginRegistry,
@@ -14,7 +19,7 @@ import {
   loadConfig,
   type AriaConfig,
   type Logger,
-} from "@aria/core";
+} from '@aria/core';
 import {
   CatalogToolResultSynthesizer,
   ConfirmationGate,
@@ -24,18 +29,20 @@ import {
   ToolExecutor,
   ToolMetricsCollector,
   type ToolRegistry,
-} from "@aria/tool-runtime";
-import { SessionMemoryStore } from "./memory/session-memory-store.js";
-import type { MetricsCollector } from "./metrics/turn-timer.js";
-import { PersonalityService } from "./personality/personality-service.js";
-import { ConversationPlanner } from "./planning/conversation-planner.js";
-import { EchoLlmProvider } from "./plugins/echo-llm.js";
-import { MockLlmProvider } from "./plugins/mock-llm.js";
-import { OllamaLlmProvider } from "./plugins/ollama-llm.js";
-import { OpenRouterLlmProvider } from "./plugins/openrouter-llm.js";
-import { ConversationService } from "./services/conversation-service.js";
-import { registerBuiltinTools } from "./tools/register-builtin-tools.js";
-import { createWebToolBackends } from "./web/create-web-backends.js";
+} from '@aria/tool-runtime';
+import { SessionMemoryStore } from './memory/session-memory-store.js';
+import type { MetricsCollector } from './metrics/turn-timer.js';
+import { PersonalityService } from './personality/personality-service.js';
+import { ConversationPlanner } from './planning/conversation-planner.js';
+import { EchoLlmProvider } from './plugins/echo-llm.js';
+import { MockLlmProvider } from './plugins/mock-llm.js';
+import { OllamaLlmProvider } from './plugins/ollama-llm.js';
+import { OpenRouterLlmProvider } from './plugins/openrouter-llm.js';
+import { ConversationService } from './services/conversation-service.js';
+import { registerBuiltinTools } from './tools/register-builtin-tools.js';
+import { BrainMockVisionProvider } from './vision/mock-vision-provider.js';
+import type { VisionPortsBag } from './vision/vision-ports.js';
+import { createWebToolBackends } from './web/create-web-backends.js';
 
 /**
  * Composition root for the brain service.
@@ -47,21 +54,22 @@ export async function createBrainContainer(
   container: Container;
   config: AriaConfig;
   conversation: ConversationService;
+  visionPorts: VisionPortsBag;
 }> {
   const config = loadConfig(env);
-  const logger = new ConsoleLogger(config.logLevel, { service: "brain" });
+  const logger = new ConsoleLogger(config.logLevel, { service: 'brain' });
 
   const llmRegistry = new PluginRegistry<ILLMProvider>();
   llmRegistry.register(
-    { id: "mock", name: "Mock LLM", version: "0.2.0" },
+    { id: 'mock', name: 'Mock LLM', version: '0.2.0' },
     () => new MockLlmProvider(),
   );
   llmRegistry.register(
-    { id: "echo", name: "Echo LLM", version: "0.1.0" },
+    { id: 'echo', name: 'Echo LLM', version: '0.1.0' },
     () => new EchoLlmProvider(),
   );
   llmRegistry.register(
-    { id: "ollama", name: "Ollama LLM", version: "1.0.0" },
+    { id: 'ollama', name: 'Ollama LLM', version: '1.0.0' },
     () =>
       new OllamaLlmProvider({
         baseUrl: config.ollama.baseUrl,
@@ -72,12 +80,12 @@ export async function createBrainContainer(
       }),
   );
   llmRegistry.register(
-    { id: "openrouter", name: "OpenRouter LLM", version: "1.0.0" },
+    { id: 'openrouter', name: 'OpenRouter LLM', version: '1.0.0' },
     () => {
       const apiKey = config.openrouter.apiKey?.trim();
       if (!apiKey) {
         throw new Error(
-          "ARIA_OPENROUTER_API_KEY is required when ARIA_LLM_PROVIDER=openrouter",
+          'ARIA_OPENROUTER_API_KEY is required when ARIA_LLM_PROVIDER=openrouter',
         );
       }
       return new OpenRouterLlmProvider({
@@ -94,13 +102,13 @@ export async function createBrainContainer(
   );
 
   const llm = await llmRegistry.create(config.llmProvider);
-  logger.info("LLM provider selected", {
+  logger.info('LLM provider selected', {
     provider: llm.metadata.id,
     model: selectedLlmModel(config),
   });
 
   const bus: IMessageBus =
-    config.bus === "nats"
+    config.bus === 'nats'
       ? new NatsMessageBus(config.natsUrl)
       : new InProcessMessageBus();
 
@@ -111,11 +119,29 @@ export async function createBrainContainer(
   const personality = new PersonalityService(config.personality);
   const memory: IMemoryStore = new SessionMemoryStore();
 
+  const sceneStore: IVisionSceneStore = new InMemoryVisionSceneStore();
+  const visionProvider: IVisionProvider = new BrainMockVisionProvider();
+  const visionPorts: VisionPortsBag = {
+    provider: visionProvider,
+    sceneStore,
+  };
+
+  bus.subscribe(AriaEventType.VisionSceneUpdated, (event) => {
+    const scene = event as VisionSceneUpdatedEvent;
+    sceneStore.update({
+      objects: scene.objects,
+      description: scene.description,
+      frameId: scene.frameId,
+      correlationId: scene.correlationId,
+      timestamp: scene.timestamp,
+    });
+  });
+
   const webBackends = config.web?.enabled
     ? createWebToolBackends(config)
     : undefined;
   if (webBackends) {
-    logger.info("Web tools enabled", {
+    logger.info('Web tools enabled', {
       searchProviders: webBackends.providers.list().map((p) => p.metadata.id),
       fetchProvider: webBackends.fetch.metadata.id,
     });
@@ -135,11 +161,13 @@ export async function createBrainContainer(
           maxResults: config.web.maxResults,
         }
       : undefined,
+    vision: visionPorts,
     includePlannedStubs: true,
   });
 
   const granted: PermissionId[] = defaultGrantedPermissions({
     webEnabled: Boolean(webBackends),
+    visionEnabled: true,
   });
   const permissionStore = new InMemoryPermissionStore(granted);
   const permissionGate = new PermissionGate();
@@ -163,6 +191,8 @@ export async function createBrainContainer(
   container.registerInstance(TOKENS.LlmProvider, llm);
   container.registerInstance(TOKENS.MemoryStore, memory);
   container.registerInstance(TOKENS.Personality, personality);
+  container.registerInstance(TOKENS.VisionProvider, visionPorts.provider);
+  container.registerInstance(TOKENS.VisionSceneStore, visionPorts.sceneStore);
   container.registerInstance(TOKENS.ToolRegistry, toolsBundle.registry);
   container.registerInstance(TOKENS.ToolCatalog, toolsBundle.catalog);
   container.registerInstance(TOKENS.ToolExecutor, executor);
@@ -180,7 +210,7 @@ export async function createBrainContainer(
   const conversation = new ConversationService(
     llm,
     bus,
-    logger.child({ component: "conversation" }),
+    logger.child({ component: 'conversation' }),
     personality,
     toolsBundle.catalog,
     executor,
@@ -195,7 +225,7 @@ export async function createBrainContainer(
   );
   historyRef.current = conversation;
 
-  return { container, config, conversation };
+  return { container, config, conversation, visionPorts };
 }
 
 export function resolveBrainPorts(container: Container): {
@@ -204,6 +234,8 @@ export function resolveBrainPorts(container: Container): {
   logger: Logger;
   config: AriaConfig;
   memory: IMemoryStore;
+  vision: IVisionProvider;
+  sceneStore: IVisionSceneStore;
 } {
   return {
     bus: container.resolve(TOKENS.MessageBus),
@@ -211,17 +243,19 @@ export function resolveBrainPorts(container: Container): {
     logger: container.resolve(TOKENS.Logger),
     config: container.resolve(TOKENS.Config),
     memory: container.resolve(TOKENS.MemoryStore),
+    vision: container.resolve(TOKENS.VisionProvider),
+    sceneStore: container.resolve(TOKENS.VisionSceneStore),
   };
 }
 
 function selectedLlmModel(config: AriaConfig): string | undefined {
   switch (config.llmProvider) {
-    case "ollama":
+    case 'ollama':
       return config.ollama.model;
-    case "openrouter":
+    case 'openrouter':
       return config.openrouter.model;
-    case "mock":
-    case "echo":
+    case 'mock':
+    case 'echo':
       return undefined;
     default: {
       const _exhaustive: never = config.llmProvider;
