@@ -141,6 +141,70 @@ body {
   font-size: 0.85rem;
 }
 
+.status-line .scene-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cyan);
+  font-size: 0.85rem;
+  max-width: 28rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vision-preview {
+  width: min(320px, 86vw);
+  margin-inline: auto;
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.55rem 0.45rem;
+  border: 1px solid var(--glass-border);
+  background: rgba(8, 14, 28, 0.55);
+  backdrop-filter: blur(8px);
+  animation: float-in 1.2s ease-out both;
+}
+
+.vision-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+  padding-inline: 0.15rem;
+}
+
+.vision-preview-title {
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cyan-soft);
+}
+
+.vision-preview-meta {
+  font-size: 0.72rem;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+}
+
+.vision-preview-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  background: #0a1220;
+}
+
+.vision-preview-caption {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+  line-height: 1.35;
+  max-height: 2.6em;
+  overflow: hidden;
+}
+
 .orb-stage {
   display: grid;
   place-items: center;

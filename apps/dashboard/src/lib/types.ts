@@ -16,6 +16,29 @@ export interface TranscriptLine {
   readonly language?: string;
 }
 
+export interface VisionBBox {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface VisionDetectedObject {
+  readonly id: string;
+  readonly label: string;
+  readonly confidence: number;
+  readonly bbox: VisionBBox;
+  readonly trackId?: string | null;
+}
+
+export interface VisionSceneView {
+  readonly summary: string;
+  readonly objects: readonly VisionDetectedObject[];
+  readonly source?: "mock" | "live";
+  readonly frameId?: string;
+  readonly description?: string;
+}
+
 export interface GatewayHelloMessage {
   readonly type: "hello";
   readonly snapshot: { readonly state: AriaUiState };
@@ -74,6 +97,20 @@ export function gatewayWsUrl(): string {
   const url = new URL(http);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = "/ws";
+  return url.toString();
+}
+
+export function visionFrameUrl(options?: {
+  readonly live?: boolean;
+  readonly bust?: string | number;
+}): string {
+  const url = new URL(`${gatewayHttpUrl()}/api/vision/frame`);
+  if (options?.live !== false) {
+    url.searchParams.set("live", "1");
+  }
+  if (options?.bust !== undefined) {
+    url.searchParams.set("t", String(options.bust));
+  }
   return url.toString();
 }
 
