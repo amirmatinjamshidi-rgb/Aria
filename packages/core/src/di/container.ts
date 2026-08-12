@@ -6,6 +6,7 @@ export const TOKENS = {
   SttProvider: Symbol.for("aria.sttProvider"),
   TtsProvider: Symbol.for("aria.ttsProvider"),
   VisionProvider: Symbol.for("aria.visionProvider"),
+  VisionSceneStore: Symbol.for("aria.visionSceneStore"),
   MemoryStore: Symbol.for("aria.memoryStore"),
   Personality: Symbol.for("aria.personality"),
   ToolRegistry: Symbol.for("aria.toolRegistry"),

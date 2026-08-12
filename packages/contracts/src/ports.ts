@@ -195,15 +195,19 @@ export interface VisionAnalyzeOptions {
   readonly detect?: boolean;
   readonly segment?: boolean;
   readonly describe?: boolean;
+  /** Persist track IDs across frames when the backend supports tracking. */
+  readonly track?: boolean;
 }
 
 export interface VisionAnalyzeResult {
   readonly objects: DetectedObject[];
   readonly description?: string;
+  readonly frameId?: string;
+  readonly source?: "mock" | "live";
 }
 
 /**
- * Port: Vision pipeline facade (YOLO / SAM2 / VLM adapters behind it).
+ * Port: Vision pipeline facade (Gemini / YOLO / SAM2 / VLM adapters behind it).
  */
 export interface IVisionProvider {
   readonly metadata: PluginMetadata;
@@ -212,6 +216,30 @@ export interface IVisionProvider {
     options?: VisionAnalyzeOptions,
   ): Promise<VisionAnalyzeResult>;
   dispose?(): Promise<void>;
+}
+
+/** Latest scene snapshot maintained by the vision world model. */
+export interface VisionSceneSnapshot {
+  readonly objects: DetectedObject[];
+  readonly description?: string;
+  readonly frameId?: string;
+  readonly correlationId: string;
+  readonly timestamp: string;
+}
+
+/**
+ * Port: In-memory world model for the latest camera scene.
+ * Updated from `vision.scene_updated` (or direct provider calls).
+ */
+export interface IVisionSceneStore {
+  getLatest(): VisionSceneSnapshot | undefined;
+  /** Latest captured frame bytes (JPEG/PNG), if retained. */
+  getLatestFrame(): Uint8Array | undefined;
+  update(
+    snapshot: VisionSceneSnapshot,
+    frame?: Uint8Array,
+  ): void;
+  clear(): void;
 }
 
 export interface MemoryQuery {

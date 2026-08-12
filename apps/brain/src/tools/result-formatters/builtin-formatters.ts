@@ -121,6 +121,49 @@ function synthesizeMemorySearch(raw: unknown, language: LanguageCode): string {
     : `Related memories:\n${lines.join("\n")}`;
 }
 
+function synthesizeDetectObjects(raw: unknown, language: LanguageCode): string {
+  const data = asRecord(raw);
+  const objects = Array.isArray(data["objects"]) ? data["objects"] : [];
+  if (objects.length === 0) {
+    return language === "fa" ? "شیء قابل توجهی نمی‌بینم." : "I do not see any notable objects.";
+  }
+  const counts = new Map<string, number>();
+  for (const obj of objects) {
+    const label = stringField(asRecord(obj), "label") ?? "object";
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const parts = [...counts.entries()].map(([label, count]) =>
+    count === 1 ? label : `${count}× ${label}`,
+  );
+  return language === "fa"
+    ? `اشیاء دیده‌شده: ${parts.join("، ")}.`
+    : `Detected: ${parts.join(", ")}.`;
+}
+
+function synthesizeDescribeScene(raw: unknown, language: LanguageCode): string {
+  const data = asRecord(raw);
+  const description = stringField(data, "description");
+  if (!description) {
+    return language === "fa" ? "توصیفی از صحنه ندارم." : "I have no scene description yet.";
+  }
+  return description;
+}
+
+function synthesizeFindObject(raw: unknown, language: LanguageCode): string {
+  const data = asRecord(raw);
+  const label = stringField(data, "label") ?? "object";
+  const found = Boolean(data["found"]);
+  const count = typeof data["count"] === "number" ? data["count"] : 0;
+  if (!found) {
+    return language === "fa"
+      ? `«${label}» را در صحنه پیدا نکردم.`
+      : `I did not find "${label}" in the scene.`;
+  }
+  return language === "fa"
+    ? `${count} مورد «${label}» پیدا شد.`
+    : `Found ${count} match(es) for "${label}".`;
+}
+
 /** Register NL formatters for shipped tools (no giant synthesizer switch). */
 export function createBuiltinFormatters(): IToolResultFormatter[] {
   return [
@@ -190,6 +233,25 @@ export function createBuiltinFormatters(): IToolResultFormatter[] {
     ),
     new NamedFormatter("search_local_memory", (r, lang) =>
       synthesizeWebSearch(r.result, lang),
+    ),
+    new NamedFormatter("detect_objects", (r, lang) =>
+      synthesizeDetectObjects(r.result, lang),
+    ),
+    new NamedFormatter("detect_people", (r, lang) => {
+      const data = asRecord(r.result);
+      const people = Array.isArray(data["people"]) ? data["people"] : [];
+      if (people.length === 0) {
+        return lang === "fa" ? "کسی را نمی‌بینم." : "I do not see any people.";
+      }
+      return lang === "fa"
+        ? `${people.length} نفر دیده می‌شود.`
+        : `I see ${people.length} person(s).`;
+    }),
+    new NamedFormatter("describe_scene", (r, lang) =>
+      synthesizeDescribeScene(r.result, lang),
+    ),
+    new NamedFormatter("find_object", (r, lang) =>
+      synthesizeFindObject(r.result, lang),
     ),
   ];
 }

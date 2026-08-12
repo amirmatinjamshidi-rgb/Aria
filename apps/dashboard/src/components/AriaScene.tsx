@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import { BrowserPcmStreamer } from "@/lib/browser-pcm";
 import { AriaGatewaySession } from "@/lib/gateway-client";
-import type { AriaUiState, TranscriptLine } from "@/lib/types";
+import type { AriaUiState, TranscriptLine, VisionSceneView } from "@/lib/types";
 import { ChatDock } from "./ChatDock";
 import { expressionFromUiState, RobotFace } from "./robot-face";
 import { StatusLine } from "./StatusLine";
 import { TranscriptStrip } from "./TranscriptStrip";
+import { VisionPreview } from "./VisionPreview";
 
 export function AriaScene() {
   const [state, setState] = useState<AriaUiState>("idle");
@@ -17,6 +18,8 @@ export function AriaScene() {
   const [micActive, setMicActive] = useState(false);
   const [micAvailable, setMicAvailable] = useState(true);
   const [micError, setMicError] = useState<string | null>(null);
+  const [sceneSummary, setSceneSummary] = useState<string | null>(null);
+  const [visionScene, setVisionScene] = useState<VisionSceneView | null>(null);
   const sessionRef = useRef<AriaGatewaySession | null>(null);
   const streamerRef = useRef<BrowserPcmStreamer | null>(null);
   const ampDecayRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -41,6 +44,8 @@ export function AriaScene() {
           setMicError(message);
         }
       },
+      onSceneSummary: setSceneSummary,
+      onSceneUpdate: setVisionScene,
     });
     sessionRef.current = session;
     session.connect();
@@ -102,7 +107,12 @@ export function AriaScene() {
       <div className="atmosphere" aria-hidden />
       <header className="brand">
         <h1>Aria</h1>
-        <StatusLine state={state} connected={connected} micError={micError} />
+        <StatusLine
+          state={state}
+          connected={connected}
+          micError={micError}
+          sceneSummary={sceneSummary}
+        />
       </header>
 
       <section className="orb-stage" aria-label="Aria presence">
@@ -112,6 +122,7 @@ export function AriaScene() {
           amplitude={amplitude}
         />
         <TranscriptStrip lines={lines} />
+        <VisionPreview scene={visionScene} connected={connected} />
       </section>
 
       <ChatDock

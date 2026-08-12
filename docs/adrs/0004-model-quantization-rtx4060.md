@@ -35,10 +35,13 @@ Development GPU is an **RTX 4060 (8 GB VRAM)** with 48 GB system RAM. Aria must 
 
 | Component | Choice |
 |-----------|--------|
-| Detection | YOLO11n / YOLO11s |
-| Segmentation | SAM2 tiny / small — on demand, not always-on |
-| VLM | Qwen2.5-VL quantized; **not** co-resident with large LLM if VRAM tight |
-| Pose | MediaPipe (CPU/GPU light) |
+| Detection / describe (default) | **Gemini API** image understanding (free tier) — cloud, opt-in via `ARIA_VISION_PROVIDER=gemini` |
+| Local fallback | YOLO26n / YOLO26s sidecar (`ARIA_VISION_PROVIDER=sidecar`) |
+| Segmentation | Gemini boxes (cloud) or SAM2 tiny/small on demand (sidecar) |
+| Pose | MediaPipe (CPU/GPU light) via sidecar |
+| Capture | OpenCV webcam via thin vision sidecar |
+
+Gemini is **off unless selected**; keep `ARIA_VISION_PROVIDER=mock` for CI. Do not co-reside a large local VLM with the LLM on 8 GB when using the sidecar path.
 
 ### Scheduling policy
 

@@ -66,19 +66,19 @@ Learn **just in time** with each phase. Depth over breadth. Build a small practi
 
 **Why:** Scene understanding for chores and navigation
 
-**Order:** OpenCV basics → YOLO detection → tracking → MediaPipe pose/hands → SAM segmentation → VLM
+**Order:** OpenCV capture → Gemini image understanding (free tier) → optional local YOLO26 / ByteTrack / MediaPipe / SAM2
 
 **Time:** 6 weeks (Phase 4)
 
 **Resources:**
+- [Gemini image understanding](https://ai.google.dev/gemini-api/docs/image-understanding)
+- [Gemini video understanding](https://ai.google.dev/gemini-api/docs/video-understanding)
 - OpenCV Python tutorials
-- Ultralytics YOLO docs
-- MediaPipe solutions docs
-- SAM2 / Qwen2.5-VL model cards
+- Ultralytics YOLO26 docs (optional local fallback)
 
-**Practice:** Webcam app that labels objects and answers "what do you see?" via a VLM
+**Practice:** Webcam app that labels objects and answers "what do you see?" via Gemini
 
-**Connects to Aria:** `IVisionProvider`, vision sidecars
+**Connects to Aria:** `IVisionProvider`, vision sidecar (capture) + Gemini API
 
 ---
 

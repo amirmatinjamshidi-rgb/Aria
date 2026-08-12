@@ -4,3 +4,4 @@ export { NatsMessageBus } from "./bus/nats-bus.js";
 export { loadConfig, AriaConfigSchema, type AriaConfig } from "./config/load-config.js";
 export { ConsoleLogger, type Logger } from "./logging/logger.js";
 export { PluginRegistry, type RegisteredPlugin } from "./plugins/registry.js";
+export { InMemoryVisionSceneStore } from "./vision/scene-store.js";

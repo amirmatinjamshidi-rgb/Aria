@@ -7,6 +7,8 @@ import {
   type GatewayErrorMessage,
   type GatewayHelloMessage,
   type TranscriptLine,
+  type VisionDetectedObject,
+  type VisionSceneView,
 } from "./types";
 
 export interface AriaSessionHandlers {
@@ -15,6 +17,8 @@ export interface AriaSessionHandlers {
   readonly onTranscript: (line: TranscriptLine) => void;
   readonly onConnection: (connected: boolean) => void;
   readonly onError: (message: string) => void;
+  readonly onSceneSummary?: (summary: string) => void;
+  readonly onSceneUpdate?: (scene: VisionSceneView) => void;
 }
 
 interface BusEventPayload {
@@ -23,6 +27,46 @@ interface BusEventPayload {
   readonly language?: string;
   readonly correlationId?: string;
   readonly current?: AriaUiState;
+  readonly objects?: unknown;
+  readonly description?: string;
+  readonly source?: "mock" | "live";
+  readonly frameId?: string;
+}
+
+function parseObjects(value: unknown): VisionDetectedObject[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: VisionDetectedObject[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const bboxRaw = record["bbox"];
+    if (!bboxRaw || typeof bboxRaw !== "object") {
+      continue;
+    }
+    const bbox = bboxRaw as Record<string, unknown>;
+    const label = typeof record["label"] === "string" ? record["label"] : "object";
+    const id = typeof record["id"] === "string" ? record["id"] : label;
+    const confidence =
+      typeof record["confidence"] === "number" ? record["confidence"] : 0;
+    const x = typeof bbox["x"] === "number" ? bbox["x"] : 0;
+    const y = typeof bbox["y"] === "number" ? bbox["y"] : 0;
+    const width = typeof bbox["width"] === "number" ? bbox["width"] : 0;
+    const height = typeof bbox["height"] === "number" ? bbox["height"] : 0;
+    const trackId =
+      typeof record["trackId"] === "string" ? record["trackId"] : undefined;
+    out.push({
+      id,
+      label,
+      confidence,
+      bbox: { x, y, width, height },
+      trackId,
+    });
+  }
+  return out;
 }
 
 export class AriaGatewaySession {
@@ -153,6 +197,29 @@ export class AriaGatewaySession {
             role: "assistant",
             text: event.text,
             language: event.language,
+          });
+        }
+        if (event.type === "vision.scene_updated") {
+          const objects = parseObjects(event.objects);
+          const counts = new Map<string, number>();
+          for (const obj of objects) {
+            counts.set(obj.label, (counts.get(obj.label) ?? 0) + 1);
+          }
+          const parts = [...counts.entries()].map(([label, count]) =>
+            count === 1 ? label : `${count}× ${label}`,
+          );
+          const body =
+            event.description?.trim() ||
+            (parts.length > 0 ? parts.join(", ") : "no objects");
+          const summary =
+            event.source === "mock" ? `MOCK (not camera): ${body}` : body;
+          this.handlers.onSceneSummary?.(summary);
+          this.handlers.onSceneUpdate?.({
+            summary,
+            objects,
+            source: event.source,
+            frameId: event.frameId,
+            description: event.description,
           });
         }
       }

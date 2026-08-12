@@ -3,6 +3,7 @@ import {
   type AriaEvent,
   type AriaEventTypeName,
   type IMessageBus,
+  type IVisionSceneStore,
   type LanguageCode,
 } from "@aria/contracts";
 import { detectLanguage, type ConversationService } from "@aria/brain";
@@ -25,6 +26,7 @@ const FORWARDED_EVENTS: ReadonlySet<AriaEventTypeName> = new Set([
   AriaEventType.VoiceTurnMetrics,
   AriaEventType.ConversationUserUtterance,
   AriaEventType.ConversationAssistantReply,
+  AriaEventType.VisionSceneUpdated,
 ]);
 
 export interface VoiceWebGatewayOptions {
@@ -36,6 +38,11 @@ export interface VoiceWebGatewayOptions {
   readonly config: VoiceConfig;
   readonly logger: Logger;
   readonly sidecarUrl: string;
+  /** Optional world model for /health + dashboard scene visibility. */
+  readonly visionSceneStore?: IVisionSceneStore;
+  /** Vision inference sidecar for live preview frames (capture only). */
+  readonly visionSidecarUrl?: string;
+  readonly visionCameraDevice?: number;
 }
 
 export interface VoiceWebGateway {
@@ -69,9 +76,63 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+function sendJpeg(res: ServerResponse, bytes: Uint8Array, meta: Record<string, string>): void {
+  res.writeHead(200, {
+    "Content-Type": "image/jpeg",
+    "Content-Length": String(bytes.byteLength),
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,OPTIONS",
+    ...meta,
+  });
+  res.end(Buffer.from(bytes));
+}
+
+function summarizeLabels(
+  objects: ReadonlyArray<{ readonly label: string }>,
+): string[] {
+  const counts = new Map<string, number>();
+  for (const obj of objects) {
+    counts.set(obj.label, (counts.get(obj.label) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([label, count]) =>
+    count === 1 ? label : `${count}× ${label}`,
+  );
+}
+
+async function fetchLivePreviewFrame(
+  sidecarUrl: string,
+  device: number,
+): Promise<{ bytes: Uint8Array; frameId?: string } | undefined> {
+  try {
+    const form = new FormData();
+    form.append("device", String(device));
+    const response = await fetch(new URL("/v1/capture", sidecarUrl), {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) {
+      return undefined;
+    }
+    const body = (await response.json()) as {
+      imageBase64?: string;
+      frameId?: string;
+    };
+    if (!body.imageBase64) {
+      return undefined;
+    }
+    return {
+      bytes: Uint8Array.from(Buffer.from(body.imageBase64, "base64")),
+      frameId: body.frameId,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Local HTTP + WebSocket bridge so the dashboard can talk to brain+voice
- * without importing sibling apps.
+ * Local HTTP + WebSocket bridge so the dashboard can talk to brain+voice+vision
+ * without importing sibling apps from the UI.
  */
 export function createVoiceWebGateway(
   options: VoiceWebGatewayOptions,
@@ -214,11 +275,70 @@ export function createVoiceWebGateway(
         }
 
         if (req.method === "GET" && url.pathname === "/health") {
+          const scene = options.visionSceneStore?.getLatest();
           sendJson(res, 200, {
             ok: true,
             snapshot: options.voice.snapshot(),
             audioSourceMode: options.config.audioSourceMode,
             sidecarUrl: options.sidecarUrl,
+            vision: scene
+              ? {
+                  objectCount: scene.objects.length,
+                  labels: summarizeLabels(scene.objects),
+                  frameId: scene.frameId,
+                  timestamp: scene.timestamp,
+                  description: scene.description,
+                }
+              : null,
+          });
+          return;
+        }
+
+        if (req.method === "GET" && url.pathname === "/api/vision/frame") {
+          const wantLive = url.searchParams.get("live") !== "0";
+          const scene = options.visionSceneStore?.getLatest();
+
+          if (wantLive && options.visionSidecarUrl) {
+            const live = await fetchLivePreviewFrame(
+              options.visionSidecarUrl,
+              options.visionCameraDevice ?? 0,
+            );
+            if (live) {
+              sendJpeg(res, live.bytes, {
+                "X-Aria-Frame-Id": live.frameId ?? scene?.frameId ?? "",
+                "X-Aria-Object-Count": String(scene?.objects.length ?? 0),
+                "X-Aria-Frame-Source": "live",
+              });
+              return;
+            }
+          }
+
+          const frame = options.visionSceneStore?.getLatestFrame();
+          if (!frame || frame.byteLength === 0) {
+            sendJson(res, 404, { error: "No vision frame yet" });
+            return;
+          }
+          sendJpeg(res, frame, {
+            "X-Aria-Frame-Id": scene?.frameId ?? "",
+            "X-Aria-Object-Count": String(scene?.objects.length ?? 0),
+            "X-Aria-Frame-Source": "store",
+          });
+          return;
+        }
+
+        if (req.method === "GET" && url.pathname === "/api/vision/scene") {
+          const scene = options.visionSceneStore?.getLatest();
+          if (!scene) {
+            sendJson(res, 404, { error: "No vision scene yet" });
+            return;
+          }
+          sendJson(res, 200, {
+            objects: scene.objects,
+            description: scene.description,
+            frameId: scene.frameId,
+            timestamp: scene.timestamp,
+            correlationId: scene.correlationId,
+            hasFrame: Boolean(options.visionSceneStore?.getLatestFrame()?.byteLength),
           });
           return;
         }
