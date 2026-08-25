@@ -221,6 +221,7 @@ export async function createBrainContainer(
       toolsEnabled: config.tools.enabled,
       maxToolRounds: config.tools.maxRounds,
       grantedPermissions: permissionStore.getGranted(),
+      streamingEnabled: config.llmStreaming,
     },
   );
   historyRef.current = conversation;

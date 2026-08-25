@@ -7,6 +7,7 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "@aria/contracts";
+import { ThinkTagFilter, iterateResponseLines } from "./stream-utils.js";
 
 export interface OllamaLlmOptions {
   readonly baseUrl: string;
@@ -31,6 +32,7 @@ interface OllamaChatMessage {
 
 interface OllamaChatResponse {
   message?: OllamaChatMessage;
+  done?: boolean;
   done_reason?: string;
 }
 
@@ -58,19 +60,6 @@ export class OllamaLlmProvider implements ILLMProvider {
     messages: readonly ChatMessage[],
     options?: LlmGenerateOptions,
   ): Promise<LlmCompletion> {
-    const body = {
-      model: this.options.model,
-      stream: false,
-      options: {
-        temperature: options?.temperature ?? this.options.temperature ?? 0.4,
-        num_predict: options?.maxTokens ?? this.options.maxTokens ?? 1024,
-      },
-      messages: this.mapMessages(messages, options?.systemPrompt),
-      tools: options?.tools?.length
-        ? options.tools.map((tool) => this.mapTool(tool))
-        : undefined,
-    };
-
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     const signal = options?.signal
@@ -78,25 +67,18 @@ export class OllamaLlmProvider implements ILLMProvider {
       : controller.signal;
 
     try {
-      const url = `${this.options.baseUrl.replace(/\/$/, "")}/api/chat`;
-      // #region agent log
-      fetch('http://127.0.0.1:7428/ingest/11d91261-a0f9-451d-8c69-0c07ca2c5204',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8aa307'},body:JSON.stringify({sessionId:'8aa307',hypothesisId:'A',location:'ollama-llm.ts:generate',message:'ollama request start',data:{url,model:this.options.model},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       const response = await this.fetchImpl(
-        url,
+        this.chatUrl(),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(this.buildBody(messages, options, false)),
           signal,
         },
       );
 
       if (!response.ok) {
         const detail = await response.text().catch(() => "");
-        // #region agent log
-        fetch('http://127.0.0.1:7428/ingest/11d91261-a0f9-451d-8c69-0c07ca2c5204',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8aa307'},body:JSON.stringify({sessionId:'8aa307',hypothesisId:'A',location:'ollama-llm.ts:generate',message:'ollama non-ok response',data:{status:response.status,detail:detail.slice(0,300)},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         throw new Error(
           `Ollama chat failed (${response.status}): ${detail || response.statusText}`,
         );
@@ -124,21 +106,103 @@ export class OllamaLlmProvider implements ILLMProvider {
         finishReason: payload.done_reason === "length" ? "length" : "stop",
       };
     } catch (error: unknown) {
-      // #region agent log
-      fetch('http://127.0.0.1:7428/ingest/11d91261-a0f9-451d-8c69-0c07ca2c5204',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8aa307'},body:JSON.stringify({sessionId:'8aa307',hypothesisId:'A',location:'ollama-llm.ts:generate',message:'ollama generate failed',data:{name:error instanceof Error ? error.name : 'unknown',message:error instanceof Error ? error.message : String(error),cause:error instanceof Error && error.cause instanceof Error ? error.cause.message : String((error as {cause?: unknown})?.cause ?? '')},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-      if (error instanceof Error && error.name === "AbortError") {
-        if (options?.signal?.aborted) {
-          throw error;
-        }
-        throw new Error(
-          `Ollama chat timed out after ${this.timeoutMs}ms (model=${this.options.model})`,
-        );
-      }
-      throw error;
+      throw this.mapError(error, options);
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /**
+   * Ollama streams NDJSON: one `{"message":{"content":"…"},"done":false}` per
+   * line. Tool calls are not surfaced here — see `generateStream` on the port.
+   */
+  async *generateStream(
+    messages: readonly ChatMessage[],
+    options?: LlmGenerateOptions,
+  ): AsyncGenerator<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const signal = options?.signal
+      ? AbortSignal.any([controller.signal, options.signal])
+      : controller.signal;
+    const filter = new ThinkTagFilter();
+
+    try {
+      const response = await this.fetchImpl(this.chatUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(this.buildBody(messages, options, true)),
+        signal,
+      });
+
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        throw new Error(
+          `Ollama chat stream failed (${response.status}): ${detail || response.statusText}`,
+        );
+      }
+
+      for await (const line of iterateResponseLines(response)) {
+        let event: OllamaChatResponse;
+        try {
+          event = JSON.parse(line) as OllamaChatResponse;
+        } catch {
+          // Ollama only emits whole JSON objects per line; ignore stray output.
+          continue;
+        }
+        const delta = filter.push(event.message?.content ?? "");
+        if (delta.length > 0) {
+          yield delta;
+        }
+        if (event.done === true) {
+          break;
+        }
+      }
+
+      const tail = filter.flush();
+      if (tail.length > 0) {
+        yield tail;
+      }
+    } catch (error: unknown) {
+      throw this.mapError(error, options);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private chatUrl(): string {
+    return `${this.options.baseUrl.replace(/\/$/, "")}/api/chat`;
+  }
+
+  private buildBody(
+    messages: readonly ChatMessage[],
+    options: LlmGenerateOptions | undefined,
+    stream: boolean,
+  ): Record<string, unknown> {
+    return {
+      model: this.options.model,
+      stream,
+      options: {
+        temperature: options?.temperature ?? this.options.temperature ?? 0.4,
+        num_predict: options?.maxTokens ?? this.options.maxTokens ?? 1024,
+      },
+      messages: this.mapMessages(messages, options?.systemPrompt),
+      tools: options?.tools?.length
+        ? options.tools.map((tool) => this.mapTool(tool))
+        : undefined,
+    };
+  }
+
+  private mapError(error: unknown, options?: LlmGenerateOptions): unknown {
+    if (error instanceof Error && error.name === "AbortError") {
+      if (options?.signal?.aborted) {
+        return error;
+      }
+      return new Error(
+        `Ollama chat timed out after ${this.timeoutMs}ms (model=${this.options.model})`,
+      );
+    }
+    return error;
   }
 
   private cleanContent(raw: string): string {

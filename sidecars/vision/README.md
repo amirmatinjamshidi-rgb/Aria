@@ -6,6 +6,8 @@ Thin FastAPI process for **local** vision I/O and optional YOLO:
 |-------|------|
 | `GET /health` | Process liveness (`mode`: real \| mock) |
 | `POST /v1/capture` | OpenCV webcam JPEG (used by Gemini + YOLO paths) |
+| `POST /v1/frame/delta` | 360p grayscale MSE vs previous frame; 1080p q75 JPEG only when changed (or `force`) |
+| `POST /v1/frame/delta/reset` | Drop the session baseline |
 | `POST /v1/detect` | YOLO26 (only when `ARIA_VISION_PROVIDER=sidecar`) |
 | `POST /v1/track` | YOLO26 + ByteTrack |
 | `POST /v1/pose` | MediaPipe pose |

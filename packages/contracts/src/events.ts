@@ -22,6 +22,7 @@ import {
 export const AriaEventType = {
   ConversationUserUtterance: "conversation.user_utterance",
   ConversationAssistantReply: "conversation.assistant_reply",
+  ConversationAssistantDelta: "conversation.assistant_delta",
   ConversationLlmCompletion: "conversation.llm_completion",
   ConversationToolCallRequested: "conversation.tool_call_requested",
   ConversationToolCallCompleted: "conversation.tool_call_completed",
@@ -61,6 +62,23 @@ export const AssistantReplyEventSchema = z.object({
   timestamp: z.string().datetime(),
 });
 export type AssistantReplyEvent = z.infer<typeof AssistantReplyEventSchema>;
+
+/**
+ * Incremental assistant text while the LLM is still generating.
+ * Consumers buffer `delta` in `sequence` order; `done` marks the last event of
+ * the turn (and carries no text). A turn that emits no deltas is still valid —
+ * consumers must fall back to `conversation.assistant_reply`.
+ */
+export const AssistantDeltaEventSchema = z.object({
+  type: z.literal(AriaEventType.ConversationAssistantDelta),
+  correlationId: z.string(),
+  delta: z.string(),
+  sequence: z.number().int().nonnegative(),
+  done: z.boolean(),
+  language: LanguageCodeSchema,
+  timestamp: z.string().datetime(),
+});
+export type AssistantDeltaEvent = z.infer<typeof AssistantDeltaEventSchema>;
 
 export const LlmCompletionEventSchema = z.object({
   type: z.literal(AriaEventType.ConversationLlmCompletion),
@@ -230,6 +248,7 @@ export type SystemSafeStopEvent = z.infer<typeof SystemSafeStopEventSchema>;
 export const AriaEventSchema = z.discriminatedUnion("type", [
   UserUtteranceEventSchema,
   AssistantReplyEventSchema,
+  AssistantDeltaEventSchema,
   LlmCompletionEventSchema,
   ToolCallRequestedEventSchema,
   ToolCallCompletedEventSchema,
@@ -281,6 +300,24 @@ export function createAssistantReply(
     type: AriaEventType.ConversationAssistantReply,
     correlationId,
     text,
+    language,
+    timestamp: nowIso(),
+  };
+}
+
+export function createAssistantDelta(
+  delta: string,
+  language: LanguageCode,
+  correlationId: string,
+  sequence: number,
+  done = false,
+): AssistantDeltaEvent {
+  return {
+    type: AriaEventType.ConversationAssistantDelta,
+    correlationId,
+    delta,
+    sequence,
+    done,
     language,
     timestamp: nowIso(),
   };

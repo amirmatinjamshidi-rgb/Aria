@@ -117,6 +117,29 @@ Wake word; multi-mic array beamforming
 
 ---
 
+## Phase 2.5 — Web Lab, Providers & Desktop
+
+**Status:** In progress (2026)
+
+### Objectives
+Exercise intelligence in the browser with per-user providers before robot hardware.
+
+### Deliverables
+- Dynamic provider settings + API keys (`~/.aria/user-settings.json`)
+- Providers UI in dashboard (LLM, vision, TTS paths, language mode)
+- Voice turn FIFO queue + Gemini rate-limit hardening
+- Ganji Persian TTS with auto language detect
+- Tauri 2 desktop shell scaffold (`apps/desktop`)
+- User + developer documentation set
+
+### Acceptance criteria
+- Bilingual PTT and typed chat without vanishing turns
+- Gemini free tier runs without 429 spam (≥4s interval)
+- User can swap providers without code changes; restart gateway to apply
+- `scripts/start-aria-web.ps1` one-command web lab on Windows
+
+---
+
 ## Phase 3 — Memory
 
 **Duration:** 6–8 weeks

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { useState, type FormEvent, type KeyboardEvent, type PointerEvent } from "react";
 
 interface ChatDockProps {
   readonly disabled?: boolean;
@@ -40,6 +40,20 @@ export function ChatDock({
     }
   };
 
+  const onMicPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    // Capture so small pointer moves off the button do not end the utterance.
+    event.currentTarget.setPointerCapture(event.pointerId);
+    onMicDown();
+  };
+
+  const onMicPointerUp = (event: PointerEvent<HTMLButtonElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    onMicUp();
+  };
+
   return (
     <form className="chat-dock" onSubmit={submit}>
       <textarea
@@ -56,13 +70,9 @@ export function ChatDock({
           type="button"
           className={`mic ${micActive ? "active" : ""}`}
           disabled={disabled || !micAvailable}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            onMicDown();
-          }}
-          onPointerUp={onMicUp}
-          onPointerLeave={onMicUp}
-          onPointerCancel={onMicUp}
+          onPointerDown={onMicPointerDown}
+          onPointerUp={onMicPointerUp}
+          onPointerCancel={onMicPointerUp}
           title={
             micAvailable
               ? "Hold to talk"

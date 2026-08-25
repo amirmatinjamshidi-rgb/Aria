@@ -1,5 +1,6 @@
 import {
   AriaEventType,
+  createAssistantDelta,
   createAssistantReply,
   createToolCallCompleted,
   createToolCallRequested,
@@ -25,6 +26,12 @@ export interface ConversationServiceOptions {
   readonly toolsEnabled: boolean;
   readonly maxToolRounds: number;
   readonly grantedPermissions: ReadonlySet<PermissionId>;
+  /**
+   * Stream the final answer as `conversation.assistant_delta` events so voice
+   * can synthesize sentence by sentence. Rounds that offer tools always use the
+   * buffered `generate` call, since tool calls are not part of the text stream.
+   */
+  readonly streamingEnabled?: boolean;
 }
 
 /**
@@ -168,6 +175,7 @@ export class ConversationService {
     let rounds = 0;
     let finalContent = "";
     let finalLanguage: LanguageCode = event.language;
+    let streamedDeltas = false;
     const toolNarratives: string[] = [];
 
     const execContext = {
@@ -183,12 +191,44 @@ export class ConversationService {
           { role: "system", content: systemPrompt },
           ...this.history,
         ];
+        // Tool calls are not part of the text stream, so a round that may still
+        // pick tools must stay buffered. The answer round always streams.
+        const offerTools =
+          plan.allowTools &&
+          toolDefs.length > 0 &&
+          rounds < this.options.maxToolRounds;
+
+        if (!offerTools && this.streamingEnabled()) {
+          timer.start("llm");
+          finalContent = await this.streamAnswer(
+            messages,
+            event.correlationId,
+            finalLanguage,
+            turnController.signal,
+          );
+          timer.end("llm");
+          this.history.push({ role: "assistant", content: finalContent });
+          streamedDeltas = true;
+
+          await this.bus.publish({
+            type: AriaEventType.ConversationLlmCompletion,
+            correlationId: event.correlationId,
+            messages,
+            completion: {
+              content: finalContent,
+              toolCalls: [],
+              language: finalLanguage,
+              finishReason: "stop",
+            },
+            timestamp: new Date().toISOString(),
+          });
+          break;
+        }
 
         timer.start("llm");
         const completion = await this.llm.generate(messages, {
           languageHint: event.language,
-          tools:
-            plan.allowTools && toolDefs.length > 0 ? toolDefs : undefined,
+          tools: offerTools ? toolDefs : undefined,
           signal: turnController.signal,
         });
         timer.end("llm");
@@ -333,6 +373,13 @@ export class ConversationService {
       this.activeTurnControllers.delete(event.correlationId);
       return;
     }
+    if (!streamedDeltas && this.streamingEnabled()) {
+      // The answer came from a buffered round (tool decision or error fallback).
+      // Emit it as a single delta anyway so downstream TTS still pipelines
+      // sentence by sentence — sentence segmentation lives with the consumer.
+      await this.publishDelta(finalContent, finalLanguage, event.correlationId, 0);
+      await this.publishDelta("", finalLanguage, event.correlationId, 1, true);
+    }
     await this.publishReply(finalContent, finalLanguage, event.correlationId);
     this.recordTurn(
       timer,
@@ -343,6 +390,66 @@ export class ConversationService {
       finalContent.length,
     );
     this.activeTurnControllers.delete(event.correlationId);
+  }
+
+  private streamingEnabled(): boolean {
+    return this.options.streamingEnabled !== false;
+  }
+
+  /**
+   * Streams the answer, republishing each token as an `assistant_delta` so the
+   * voice pipeline can start synthesizing the first sentence immediately.
+   * Returns the fully accumulated text for history and `assistant_reply`.
+   */
+  private async streamAnswer(
+    messages: readonly ChatMessage[],
+    correlationId: string,
+    language: LanguageCode,
+    signal: AbortSignal,
+  ): Promise<string> {
+    let sequence = 0;
+    let accumulated = "";
+
+    try {
+      for await (const delta of this.llm.generateStream(messages, {
+        languageHint: language,
+        signal,
+      })) {
+        if (signal.aborted) {
+          break;
+        }
+        if (delta.length === 0) {
+          continue;
+        }
+        accumulated += delta;
+        await this.publishDelta(delta, language, correlationId, sequence);
+        sequence += 1;
+      }
+    } finally {
+      // Consumers block on `done` to flush their trailing sentence, so it must
+      // be published even when the stream throws or is aborted mid-turn.
+      await this.publishDelta(
+        "",
+        language,
+        correlationId,
+        sequence,
+        true,
+      ).catch(() => undefined);
+    }
+
+    return accumulated.trim();
+  }
+
+  private async publishDelta(
+    delta: string,
+    language: LanguageCode,
+    correlationId: string,
+    sequence: number,
+    done = false,
+  ): Promise<void> {
+    await this.bus.publish(
+      createAssistantDelta(delta, language, correlationId, sequence, done),
+    );
   }
 
   private async publishReply(

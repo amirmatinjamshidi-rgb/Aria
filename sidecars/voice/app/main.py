@@ -2,21 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
-import subprocess
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from pathlib import Path
 from threading import Lock
 from typing import Annotated, Literal
 
 import numpy as np
 import torch
 from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from silero_vad import load_silero_vad
 
+from .piper_engine import PiperEngine
+
 app = FastAPI(title="Aria Voice Inference", version="1.0.0")
+
+# End-of-speech hangover. Silero frames are 32 ms, so 288 ms is 9 whole frames —
+# long enough to ride out inter-word gaps, short enough that the turn does not
+# feel padded. The client's matching pre-roll keeps the first syllable intact.
+DEFAULT_MIN_SILENCE_MS = 288
 
 
 class CamelModel(BaseModel):
@@ -48,6 +54,7 @@ class SynthesisRequest(CamelModel):
     model: str
     executable: str = "piper"
     speaking_rate: float | None = Field(default=None, alias="speakingRate")
+    language: Literal["en", "fa"] | None = None
 
 
 class SynthesisResponse(CamelModel):
@@ -143,34 +150,71 @@ class SileroEngine:
 
 
 class WhisperModels:
+    """CTranslate2 Whisper models, cached per (name, device, compute type).
+
+    CUDA is preferred with `float16`. A GPU that advertises itself through torch
+    can still fail to load CTranslate2 (missing cuDNN, exhausted VRAM), so a
+    failed CUDA load is retried once on CPU with `int8` rather than taking the
+    whole turn down.
+    """
+
     def __init__(self) -> None:
         self._models: dict[tuple[str, str, str], object] = {}
         self._lock = Lock()
 
+    @staticmethod
+    def _resolve(device: str, compute_type: str) -> tuple[str, str]:
+        resolved_device = device
+        if resolved_device == "auto":
+            resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
+        resolved_compute = compute_type
+        if resolved_device == "cpu" and compute_type in {"float16", "int8_float16"}:
+            resolved_compute = "int8"
+        return resolved_device, resolved_compute
+
     def get(self, name: str, device: str, compute_type: str):
+        resolved_device, resolved_compute = self._resolve(device, compute_type)
+
+        with self._lock:
+            key = (name, resolved_device, resolved_compute)
+            cached = self._models.get(key)
+            if cached is not None:
+                return cached
+
+            try:
+                model = self._load(name, resolved_device, resolved_compute)
+            except Exception as error:
+                if resolved_device != "cuda":
+                    raise
+                print(
+                    f"[aria-voice] Whisper CUDA load failed ({error!s}); "
+                    "falling back to CPU int8",
+                    flush=True,
+                )
+                key = (name, "cpu", "int8")
+                cached = self._models.get(key)
+                if cached is not None:
+                    return cached
+                model = self._load(name, "cpu", "int8")
+
+            self._models[key] = model
+            return model
+
+    @staticmethod
+    def _load(name: str, device: str, compute_type: str):
         from faster_whisper import WhisperModel
 
-        resolved_device = (
-            "cuda" if device == "auto" and torch.cuda.is_available() else device
+        print(
+            f"[aria-voice] loading Whisper {name} device={device} "
+            f"compute={compute_type}",
+            flush=True,
         )
-        if resolved_device == "auto":
-            resolved_device = "cpu"
-        resolved_compute = compute_type
-        if resolved_device == "cpu" and compute_type == "float16":
-            resolved_compute = "int8"
-        key = (name, resolved_device, resolved_compute)
-        with self._lock:
-            if key not in self._models:
-                self._models[key] = WhisperModel(
-                    name,
-                    device=resolved_device,
-                    compute_type=resolved_compute,
-                )
-            return self._models[key]
+        return WhisperModel(name, device=device, compute_type=compute_type)
 
 
 vad_engine = SileroEngine()
 whisper_models = WhisperModels()
+piper_engine = PiperEngine()
 
 
 @app.get("/health")
@@ -184,7 +228,7 @@ async def vad(
     session_id: Annotated[str, Header(alias="x-session-id")],
     sample_rate: Annotated[int, Header(alias="x-sample-rate")] = 16000,
     threshold: Annotated[float, Header(alias="x-vad-threshold")] = 0.5,
-    min_silence_ms: Annotated[int, Header(alias="x-min-silence-ms")] = 500,
+    min_silence_ms: Annotated[int, Header(alias="x-min-silence-ms")] = DEFAULT_MIN_SILENCE_MS,
 ) -> VadResponse:
     try:
         return await asyncio.to_thread(
@@ -255,66 +299,74 @@ async def transcribe(
     response_model_by_alias=True,
 )
 async def synthesize(request: SynthesisRequest) -> SynthesisResponse:
-    model_path = Path(request.model)
-    # #region agent log
     try:
-        import json as _json
-        from pathlib import Path as _Path
-        _log = _Path(__file__).resolve().parents[3] / "debug-8aa307.log"
-        with _log.open("a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({"sessionId":"8aa307","hypothesisId":"B","location":"main.py:synthesize","message":"sidecar synthesize entry","data":{"model":request.model,"executable":request.executable,"modelExists":model_path.is_file(),"cwd":str(_Path.cwd()),"resolvedModel":str(model_path.resolve()) if model_path.exists() else str(model_path),"textLen":len(request.text)},"timestamp":__import__("time").time()*1000}) + "\n")
-    except Exception:
-        pass
-    # #endregion
-    if not model_path.is_file():
-        raise HTTPException(
-            status_code=400, detail=f"Piper model not found: {model_path}"
+        pcm, sample_rate = await asyncio.to_thread(
+            piper_engine.synthesize,
+            request.text,
+            request.model,
+            request.executable,
+            request.speaking_rate,
+            request.language,
         )
-
-    args = [request.executable, "--model", str(model_path), "--output-raw"]
-    if request.speaking_rate and request.speaking_rate > 0:
-        args.extend(["--length-scale", str(1.0 / request.speaking_rate)])
-
-    def run_piper() -> bytes:
-        try:
-            result = subprocess.run(
-                args,
-                input=request.text.encode("utf-8"),
-                capture_output=True,
-                check=True,
-                timeout=60,
-            )
-            return result.stdout
-        except FileNotFoundError as error:
-            raise RuntimeError(
-                f"Piper executable not found: {request.executable}"
-            ) from error
-        except subprocess.CalledProcessError as error:
-            detail = error.stderr.decode("utf-8", errors="replace")
-            raise RuntimeError(f"Piper failed: {detail}") from error
-
-    try:
-        pcm = await asyncio.to_thread(run_piper)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     except RuntimeError as error:
-        # #region agent log
-        try:
-            import json as _json
-            from pathlib import Path as _Path
-            _log = _Path(__file__).resolve().parents[3] / "debug-8aa307.log"
-            with _log.open("a", encoding="utf-8") as _f:
-                _f.write(_json.dumps({"sessionId":"8aa307","hypothesisId":"B","location":"main.py:synthesize","message":"sidecar synthesize runtime error","data":{"detail":str(error)},"timestamp":__import__("time").time()*1000}) + "\n")
-        except Exception:
-            pass
-        # #endregion
         raise HTTPException(status_code=500, detail=str(error)) from error
-
-    config_path = Path(f"{model_path}.json")
-    sample_rate = 22050
-    if config_path.is_file():
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        sample_rate = int(config.get("audio", {}).get("sample_rate", sample_rate))
 
     return SynthesisResponse(
         audioBase64=base64.b64encode(pcm).decode("ascii"),
         sampleRateHz=sample_rate,
+    )
+
+
+@app.post("/v1/synthesize/stream")
+async def synthesize_stream(request: SynthesisRequest) -> StreamingResponse:
+    """Chunked raw PCM so Node can start playback before synthesis finishes.
+
+    The sample rate is resolved up front and returned in `x-sample-rate`, since
+    a chunked body has no place to carry it and the caller needs it to open the
+    audio sink before the first chunk arrives.
+    """
+    try:
+        plan = await asyncio.to_thread(
+            piper_engine.prepare,
+            request.text,
+            request.model,
+            request.speaking_rate,
+            request.language,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    async def body() -> AsyncIterator[bytes]:
+        # Some HTTP stacks (Node fetch on Windows + uvicorn) do not complete
+        # the response until the first body byte. 32 ms of silence unblocks
+        # playback setup while Piper loads the voice.
+        yield bytes(int(plan.sample_rate * 0.032) * 2)
+        chunks = piper_engine.iter_synthesize(plan, request.executable)
+        try:
+            while True:
+                # Piper is synchronous and CPU-bound; stepping the generator in a
+                # worker thread keeps the event loop free to notice disconnects.
+                chunk = await asyncio.to_thread(next, chunks, None)
+                if chunk is None:
+                    break
+                yield chunk
+        finally:
+            chunks.close()
+
+    return StreamingResponse(
+        body(),
+        media_type="application/octet-stream",
+        headers={
+            "x-sample-rate": str(plan.sample_rate),
+            "x-audio-format": "s16le",
+            "x-channels": "1",
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
     )

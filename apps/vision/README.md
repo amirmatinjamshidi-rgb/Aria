@@ -22,7 +22,8 @@ detection uses Gemini. Tracking for Gemini uses IoU label matching in TypeScript
 ARIA_GEMINI_API_KEY=your_key_here
 ARIA_GEMINI_VISION_MODEL=gemini-2.0-flash
 ARIA_VISION_PROVIDER=gemini
-ARIA_VISION_ANALYZE_INTERVAL_MS=1000
+ARIA_VISION_ANALYZE_INTERVAL_MS=4500
+ARIA_GEMINI_MIN_INTERVAL_MS=4500
 ```
 
 ## Run (browser)
@@ -39,7 +40,8 @@ npm run dashboard
 ```
 
 Ask “what do you see?” / “detect objects”. Preview polls live frames; Gemini
-analyze runs on the 1000ms loop.
+analyze runs on the configured loop (≥4500ms / token bucket — see ADR-0013).
+Unchanged camera frames skip Gemini entirely.
 
 ## Local YOLO fallback
 

@@ -9,6 +9,11 @@ export const AriaConfigSchema = z.object({
     .default("mock"),
   bus: z.enum(["inprocess", "nats"]).default("inprocess"),
   natsUrl: z.string().default("nats://127.0.0.1:4222"),
+  /**
+   * Publish `conversation.assistant_delta` while the LLM generates so voice can
+   * start speaking the first sentence before the turn finishes.
+   */
+  llmStreaming: z.boolean().default(true),
   ollama: z
     .object({
       baseUrl: z.string().url().default("http://127.0.0.1:11434"),
@@ -88,6 +93,10 @@ export function loadConfig(
     llmProvider: env["ARIA_LLM_PROVIDER"],
     bus: env["ARIA_BUS"],
     natsUrl: env["ARIA_NATS_URL"],
+    llmStreaming:
+      env["ARIA_LLM_STREAMING"] === undefined
+        ? undefined
+        : env["ARIA_LLM_STREAMING"].trim() !== "false",
     ollama: {
       baseUrl: env["ARIA_OLLAMA_URL"],
       model: env["ARIA_OLLAMA_MODEL"],

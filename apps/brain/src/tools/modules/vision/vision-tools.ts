@@ -4,7 +4,7 @@ import type {
   ToolExecutionContext,
   VisionSceneSnapshot,
 } from "@aria/contracts";
-import { BaseTool, throwToolError } from "@aria/tool-runtime";
+import { BaseTool, isToolExecutionError, throwToolError } from "@aria/tool-runtime";
 import { defineToolMeta } from "../../define-tool-meta.js";
 import type { VisionPortsBag } from "../../../vision/vision-ports.js";
 
@@ -16,50 +16,81 @@ function emptyFrame(): Uint8Array {
   return Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]);
 }
 
+function isStubJpeg(frame: Uint8Array): boolean {
+  return frame.byteLength <= 4;
+}
+
+async function resolveLiveFrame(
+  ports: VisionPortsBag,
+): Promise<{ image: Uint8Array; frameId?: string }> {
+  if (ports.isStreaming && !ports.isStreaming()) {
+    throwToolError(
+      "PROVIDER",
+      "Video is off. Start video in the dashboard so I can see the camera.",
+    );
+  }
+
+  try {
+    if (ports.captureFrame) {
+      return await ports.captureFrame();
+    }
+    if (ports.provider.captureFrame) {
+      return await ports.provider.captureFrame();
+    }
+  } catch (error: unknown) {
+    if (isToolExecutionError(error)) {
+      throw error;
+    }
+    throwToolError(
+      "PROVIDER",
+      `Camera capture failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  const stored = ports.sceneStore.getLatestFrame();
+  if (stored && !isStubJpeg(stored)) {
+    return { image: stored, frameId: ports.sceneStore.getLatest()?.frameId };
+  }
+
+  if (ports.provider.metadata.id.includes("mock")) {
+    return { image: emptyFrame(), frameId: "mock" };
+  }
+
+  throwToolError(
+    "PROVIDER",
+    "No camera frame. Start video or check that the vision sidecar can open the webcam.",
+  );
+}
+
 async function resolveScene(
   ports: VisionPortsBag,
   options: { readonly describe?: boolean; readonly peopleOnly?: boolean } = {},
 ): Promise<VisionSceneSnapshot> {
   const store: IVisionSceneStore = ports.sceneStore;
   const provider: IVisionProvider = ports.provider;
-  const latest = store.getLatest();
-  const frame = store.getLatestFrame() ?? emptyFrame();
-
-  if (options.describe || !latest) {
-    const result = await provider.analyze(frame, {
-      detect: true,
-      track: true,
-      describe: options.describe === true,
-    });
-    const snapshot: VisionSceneSnapshot = {
-      objects: result.objects,
-      description: result.description,
-      frameId: result.frameId,
-      correlationId: `tool-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-    };
-    store.update(snapshot, frame);
-    if (options.peopleOnly) {
-      return {
-        ...snapshot,
-        objects: snapshot.objects.filter((obj) =>
-          /person|people|human|man|woman|child/i.test(obj.label),
-        ),
-      };
-    }
-    return snapshot;
-  }
-
+  const captured = await resolveLiveFrame(ports);
+  const result = await provider.analyze(captured.image, {
+    detect: true,
+    track: true,
+    describe: options.describe === true,
+  });
+  const snapshot: VisionSceneSnapshot = {
+    objects: result.objects,
+    description: result.description,
+    frameId: result.frameId ?? captured.frameId,
+    correlationId: `tool-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+  };
+  store.update(snapshot, captured.image);
   if (options.peopleOnly) {
     return {
-      ...latest,
-      objects: latest.objects.filter((obj) =>
+      ...snapshot,
+      objects: snapshot.objects.filter((obj) =>
         /person|people|human|man|woman|child/i.test(obj.label),
       ),
     };
   }
-
-  return latest;
+  return snapshot;
 }
 
 export class DetectObjectsTool extends BaseTool {

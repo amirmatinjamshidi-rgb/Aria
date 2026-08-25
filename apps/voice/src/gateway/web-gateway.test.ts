@@ -143,4 +143,80 @@ describe("createVoiceWebGateway", () => {
       await gateway.stop();
     }
   });
+
+  it("starts and stops optional video streaming on demand", async () => {
+    const bus = new InProcessMessageBus();
+    const voice = {
+      submitText: vi.fn(),
+      snapshot: () => ({ state: "listening" as const }),
+      setAmplitudeListener: vi.fn(),
+      setBrowserCaptureActive: vi.fn(),
+      acceptAudioChunk: vi.fn(),
+      interrupt: vi.fn(),
+    } as unknown as VoicePipeline;
+    const conversation = {
+      clearHistory: vi.fn(),
+    } as unknown as ConversationService;
+    let streaming = false;
+    const start = vi.fn(() => {
+      streaming = true;
+    });
+    const stop = vi.fn(async () => {
+      streaming = false;
+    });
+
+    const port = await allocatePort();
+    const gateway = createVoiceWebGateway({
+      host: "127.0.0.1",
+      port,
+      bus,
+      voice,
+      conversation,
+      config: loadVoiceConfig({ ARIA_AUDIO_SOURCE: "browser" }),
+      logger,
+      sidecarUrl: "http://127.0.0.1:8765",
+      visionStream: {
+        available: true,
+        isActive: () => streaming,
+        start,
+        stop,
+      },
+    });
+
+    await gateway.start();
+    try {
+      const idle = await fetch(`http://127.0.0.1:${port}/api/vision/stream`);
+      expect(idle.status).toBe(200);
+      await expect(idle.json()).resolves.toEqual({
+        available: true,
+        streaming: false,
+      });
+
+      const started = await fetch(`http://127.0.0.1:${port}/api/vision/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ streaming: true }),
+      });
+      expect(started.status).toBe(200);
+      await expect(started.json()).resolves.toEqual({
+        available: true,
+        streaming: true,
+      });
+      expect(start).toHaveBeenCalledOnce();
+
+      const stopped = await fetch(`http://127.0.0.1:${port}/api/vision/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ streaming: false }),
+      });
+      expect(stopped.status).toBe(200);
+      await expect(stopped.json()).resolves.toEqual({
+        available: true,
+        streaming: false,
+      });
+      expect(stop).toHaveBeenCalledOnce();
+    } finally {
+      await gateway.stop();
+    }
+  });
 });

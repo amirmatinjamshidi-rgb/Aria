@@ -23,6 +23,8 @@
     "vision": "npm run dev -w @aria/vision",
     "vision:sidecar": "node scripts/run-vision-sidecar.mjs",
     "dashboard": "npm run dev -w @aria/dashboard",
+    "desktop:dev": "npm run dev -w @aria/desktop",
+    "desktop:build": "npm run build -w @aria/desktop",
     "lint": "turbo run lint",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",

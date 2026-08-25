@@ -30,8 +30,11 @@ export interface VisionRuntime {
   readonly config: VisionConfig;
   readonly provider: IVisionProvider;
   readonly sceneStore: IVisionSceneStore;
+  readonly camera: CameraCapture;
   readonly loop: VisionSceneLoop;
+  isStreaming(): boolean;
   start(): void;
+  stopStreaming(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -99,12 +102,20 @@ export function createVisionRuntime(
     config,
     provider,
     sceneStore,
+    camera,
     loop,
+    isStreaming() {
+      return loop.isRunning();
+    },
     start() {
       loop.start();
     },
+    async stopStreaming() {
+      await loop.stop();
+    },
     async stop() {
       await loop.stop();
+      await provider.dispose?.();
     },
   };
 }

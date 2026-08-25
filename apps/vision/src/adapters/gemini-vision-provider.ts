@@ -7,6 +7,7 @@ import {
 } from "@aria/contracts";
 import { z } from "zod";
 import type { VisionConfig } from "../config.js";
+import { TokenBucket } from "../rate-limiter.js";
 import { SimpleIouTracker } from "../tracking/iou-tracker.js";
 
 const GeminiBoxItemSchema = z.object({
@@ -29,6 +30,17 @@ const GeminiVisionJsonSchema = z.object({
   objects: z.array(GeminiBoxItemSchema).default([]),
 });
 
+export class GeminiRateLimitError extends Error {
+  readonly status = 429;
+  readonly retryAfterMs: number;
+
+  constructor(retryAfterMs: number, detail: string) {
+    super(`Gemini vision rate limited (429): retry in ${retryAfterMs}ms — ${detail}`);
+    this.name = "GeminiRateLimitError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
 class RequestQueue {
   private chain: Promise<unknown> = Promise.resolve();
 
@@ -44,19 +56,24 @@ class RequestQueue {
 
 /**
  * Cloud CV via Gemini image understanding (free-tier friendly).
+ * Serializes requests and backs off on HTTP 429 to avoid free-tier exhaustion.
  * @see https://ai.google.dev/gemini-api/docs/image-understanding
  */
 export class GeminiVisionProvider implements IVisionProvider {
   readonly metadata: PluginMetadata = {
     id: "gemini-vision",
     name: "Gemini Vision",
-    version: "1.0.0",
+    version: "1.1.0",
   };
 
   private readonly queue = new RequestQueue();
   private readonly tracker = new SimpleIouTracker();
   private readonly apiKey: string;
+  private readonly minIntervalMs: number;
+  private readonly limiter: TokenBucket;
   private frameCounter = 0;
+  private consecutiveRateLimits = 0;
+  private lastGoodResult?: VisionAnalyzeResult;
 
   constructor(
     private readonly config: Pick<
@@ -68,7 +85,9 @@ export class GeminiVisionProvider implements IVisionProvider {
       | "vlmEnabled"
       | "segmentEnabled"
       | "confidenceThreshold"
-    >,
+    > & {
+      readonly geminiMinIntervalMs?: number;
+    },
   ) {
     const key = config.geminiApiKey?.trim();
     if (!key) {
@@ -77,6 +96,18 @@ export class GeminiVisionProvider implements IVisionProvider {
       );
     }
     this.apiKey = key;
+    this.minIntervalMs = Math.max(250, config.geminiMinIntervalMs ?? 4500);
+    // Capacity 1: no bursting. A burst is exactly what trips the free-tier RPM
+    // limit, and a stale frame is cheaper than a 429 plus its backoff.
+    this.limiter = new TokenBucket({
+      capacity: 1,
+      refillIntervalMs: this.minIntervalMs,
+    });
+  }
+
+  /** Remaining cooldown before the next Gemini call is allowed. */
+  cooldownRemainingMs(): number {
+    return this.limiter.delayMs();
   }
 
   async analyze(
@@ -96,45 +127,72 @@ export class GeminiVisionProvider implements IVisionProvider {
       return { objects: [], frameId, source: "live" };
     }
 
-    const parsed = await this.queue.enqueue(() =>
-      this.callGemini(image, { detect, describe, segment }),
-    );
+    try {
+      const parsed = await this.queue.enqueue(() =>
+        this.callGemini(image, { detect, describe, segment }),
+      );
+      this.consecutiveRateLimits = 0;
 
-    let objects = parsed.objects
-      .map((item, index) => toDetectedObject(item, index))
-      .filter((obj) => obj.confidence >= this.config.confidenceThreshold);
+      let objects = parsed.objects
+        .map((item, index) => toDetectedObject(item, index))
+        .filter((obj) => obj.confidence >= this.config.confidenceThreshold);
 
-    if (track) {
-      objects = this.tracker.assign(objects);
+      if (track) {
+        objects = this.tracker.assign(objects);
+      }
+
+      if (segment) {
+        objects = objects.map((obj, index) => ({
+          ...obj,
+          maskRef: obj.maskRef ?? `gemini-mask-${index + 1}`,
+        }));
+      }
+
+      let description = parsed.description;
+      if (options.describe === true && !this.config.vlmEnabled) {
+        description =
+          "Scene description is disabled (ARIA_VISION_VLM_ENABLED=false).";
+      } else if (describe && !description) {
+        description = summarizeLabels(objects);
+      }
+
+      const result: VisionAnalyzeResult = {
+        objects,
+        description,
+        frameId,
+        source: "live",
+      };
+      this.lastGoodResult = result;
+      return result;
+    } catch (error: unknown) {
+      if (error instanceof GeminiRateLimitError) {
+        const cooldownNote = `Vision cooling down after rate limit (${Math.ceil(error.retryAfterMs / 1000)}s).`;
+        if (this.lastGoodResult) {
+          // Serve last good scene while cooling down — avoids empty UI thrash.
+          return {
+            ...this.lastGoodResult,
+            frameId,
+            description:
+              this.lastGoodResult.description ?? cooldownNote,
+          };
+        }
+        return {
+          objects: [],
+          frameId,
+          source: "live",
+          description: cooldownNote,
+        };
+      }
+      throw error;
     }
-
-    if (segment) {
-      objects = objects.map((obj, index) => ({
-        ...obj,
-        maskRef: obj.maskRef ?? `gemini-mask-${index + 1}`,
-      }));
-    }
-
-    let description = parsed.description;
-    if (options.describe === true && !this.config.vlmEnabled) {
-      description =
-        "Scene description is disabled (ARIA_VISION_VLM_ENABLED=false).";
-    } else if (describe && !description) {
-      description = summarizeLabels(objects);
-    }
-
-    return {
-      objects,
-      description,
-      frameId,
-      source: "live",
-    };
   }
 
   private async callGemini(
     image: Uint8Array,
     flags: { detect: boolean; describe: boolean; segment: boolean },
   ): Promise<z.infer<typeof GeminiVisionJsonSchema>> {
+    await this.limiter.acquire();
+
     const base64 = Buffer.from(image).toString("base64");
     const mimeType = sniffMime(image);
     const prompt = buildPrompt(flags);
@@ -165,6 +223,18 @@ export class GeminiVisionProvider implements IVisionProvider {
     });
 
     const payload: unknown = await response.json();
+    if (response.status === 429) {
+      this.consecutiveRateLimits += 1;
+      const retryAfterMs = resolveRetryAfterMs(
+        response.headers,
+        payload,
+        this.consecutiveRateLimits,
+        this.minIntervalMs,
+      );
+      this.limiter.blockFor(retryAfterMs);
+      throw new GeminiRateLimitError(retryAfterMs, JSON.stringify(payload));
+    }
+
     if (!response.ok) {
       throw new Error(
         `Gemini vision failed (${response.status}): ${JSON.stringify(payload)}`,
@@ -175,6 +245,37 @@ export class GeminiVisionProvider implements IVisionProvider {
     const json = extractJsonObject(text);
     return GeminiVisionJsonSchema.parse(json);
   }
+}
+
+function resolveRetryAfterMs(
+  headers: Headers,
+  payload: unknown,
+  consecutive: number,
+  minIntervalMs: number,
+): number {
+  const header = headers.get("retry-after");
+  if (header) {
+    const asSeconds = Number(header);
+    if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+      return Math.max(minIntervalMs, Math.ceil(asSeconds * 1000));
+    }
+    const asDate = Date.parse(header);
+    if (!Number.isNaN(asDate)) {
+      return Math.max(minIntervalMs, asDate - Date.now());
+    }
+  }
+
+  const record = asRecord(payload);
+  const error = asRecord(record["error"]);
+  const message = typeof error["message"] === "string" ? error["message"] : "";
+  const match = /retry in ([0-9.]+)s/i.exec(message);
+  if (match?.[1]) {
+    return Math.max(minIntervalMs, Math.ceil(Number(match[1]) * 1000));
+  }
+
+  // Exponential backoff capped at 60s: 4s, 8s, 16s, 32s, 60s…
+  const exp = Math.min(60_000, minIntervalMs * 2 ** Math.min(consecutive, 4));
+  return exp;
 }
 
 function buildPrompt(flags: {

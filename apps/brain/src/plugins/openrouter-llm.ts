@@ -7,6 +7,7 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "@aria/contracts";
+import { ThinkTagFilter, iterateResponseLines } from "./stream-utils.js";
 
 export interface OpenRouterLlmOptions {
   readonly baseUrl: string;
@@ -45,6 +46,16 @@ interface OpenAiChatResponse {
   };
 }
 
+interface OpenAiChatStreamChunk {
+  choices?: Array<{
+    delta?: { content?: string | null };
+    finish_reason?: string | null;
+  }>;
+  error?: {
+    message?: string;
+  };
+}
+
 /**
  * ILLMProvider adapter for OpenRouter (OpenAI-compatible chat completions).
  * No personality / prompt policy lives here — only transport + schema mapping.
@@ -74,16 +85,6 @@ export class OpenRouterLlmProvider implements ILLMProvider {
     messages: readonly ChatMessage[],
     options?: LlmGenerateOptions,
   ): Promise<LlmCompletion> {
-    const body = {
-      model: this.options.model,
-      temperature: options?.temperature ?? this.options.temperature ?? 0.4,
-      max_tokens: options?.maxTokens ?? this.options.maxTokens ?? 1024,
-      messages: this.mapMessages(messages, options?.systemPrompt),
-      tools: options?.tools?.length
-        ? options.tools.map((tool) => this.mapTool(tool))
-        : undefined,
-    };
-
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     const signal = options?.signal
@@ -92,11 +93,11 @@ export class OpenRouterLlmProvider implements ILLMProvider {
 
     try {
       const response = await this.fetchImpl(
-        `${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`,
+        this.completionsUrl(),
         {
           method: "POST",
           headers: this.buildHeaders(),
-          body: JSON.stringify(body),
+          body: JSON.stringify(this.buildBody(messages, options, false)),
           signal,
         },
       );
@@ -139,18 +140,110 @@ export class OpenRouterLlmProvider implements ILLMProvider {
         finishReason,
       };
     } catch (error: unknown) {
-      if (error instanceof Error && error.name === "AbortError") {
-        if (options?.signal?.aborted) {
-          throw error;
-        }
-        throw new Error(
-          `OpenRouter chat timed out after ${this.timeoutMs}ms (model=${this.options.model})`,
-        );
-      }
-      throw error;
+      throw this.mapError(error, options);
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /**
+   * OpenAI-compatible SSE: `data: {…}` frames carrying `choices[0].delta.content`,
+   * terminated by `data: [DONE]`. Tool calls are not surfaced here.
+   */
+  async *generateStream(
+    messages: readonly ChatMessage[],
+    options?: LlmGenerateOptions,
+  ): AsyncGenerator<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const signal = options?.signal
+      ? AbortSignal.any([controller.signal, options.signal])
+      : controller.signal;
+    const filter = new ThinkTagFilter();
+
+    try {
+      const response = await this.fetchImpl(this.completionsUrl(), {
+        method: "POST",
+        headers: { ...this.buildHeaders(), Accept: "text/event-stream" },
+        body: JSON.stringify(this.buildBody(messages, options, true)),
+        signal,
+      });
+
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        throw new Error(
+          `OpenRouter chat stream failed (${response.status}): ${detail || response.statusText}`,
+        );
+      }
+
+      for await (const line of iterateResponseLines(response)) {
+        // `:` prefixed lines are SSE keep-alive comments.
+        if (line.startsWith(":") || !line.startsWith("data:")) {
+          continue;
+        }
+        const payload = line.slice("data:".length).trim();
+        if (payload === "[DONE]") {
+          break;
+        }
+
+        let chunk: OpenAiChatStreamChunk;
+        try {
+          chunk = JSON.parse(payload) as OpenAiChatStreamChunk;
+        } catch {
+          continue;
+        }
+        if (chunk.error?.message) {
+          throw new Error(`OpenRouter chat stream failed: ${chunk.error.message}`);
+        }
+
+        const delta = filter.push(chunk.choices?.[0]?.delta?.content ?? "");
+        if (delta.length > 0) {
+          yield delta;
+        }
+      }
+
+      const tail = filter.flush();
+      if (tail.length > 0) {
+        yield tail;
+      }
+    } catch (error: unknown) {
+      throw this.mapError(error, options);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private completionsUrl(): string {
+    return `${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`;
+  }
+
+  private buildBody(
+    messages: readonly ChatMessage[],
+    options: LlmGenerateOptions | undefined,
+    stream: boolean,
+  ): Record<string, unknown> {
+    return {
+      model: this.options.model,
+      temperature: options?.temperature ?? this.options.temperature ?? 0.4,
+      max_tokens: options?.maxTokens ?? this.options.maxTokens ?? 1024,
+      stream,
+      messages: this.mapMessages(messages, options?.systemPrompt),
+      tools: options?.tools?.length
+        ? options.tools.map((tool) => this.mapTool(tool))
+        : undefined,
+    };
+  }
+
+  private mapError(error: unknown, options?: LlmGenerateOptions): unknown {
+    if (error instanceof Error && error.name === "AbortError") {
+      if (options?.signal?.aborted) {
+        return error;
+      }
+      return new Error(
+        `OpenRouter chat timed out after ${this.timeoutMs}ms (model=${this.options.model})`,
+      );
+    }
+    return error;
   }
 
   private buildHeaders(): Record<string, string> {

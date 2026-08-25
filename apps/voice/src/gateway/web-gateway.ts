@@ -1,13 +1,15 @@
 import {
   AriaEventType,
+  ProviderSettingsPatchSchema,
   type AriaEvent,
   type AriaEventTypeName,
   type IMessageBus,
   type IVisionSceneStore,
   type LanguageCode,
+  type ProviderSettings,
 } from "@aria/contracts";
-import { detectLanguage, type ConversationService } from "@aria/brain";
-import type { Logger } from "@aria/core";
+import type { ConversationService } from "@aria/brain";
+import type { Logger, UserSettingsStore } from "@aria/core";
 import {
   createServer,
   type IncomingMessage,
@@ -16,7 +18,9 @@ import {
 } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { VoiceConfig } from "../config.js";
+import { detectTextLanguage } from "../language.js";
 import type { VoicePipeline } from "../voice-pipeline.js";
+import type { RemoteAudioPlayback } from "../adapters/remote-audio-playback.js";
 
 const FORWARDED_EVENTS: ReadonlySet<AriaEventTypeName> = new Set([
   AriaEventType.VoiceStateChanged,
@@ -38,11 +42,22 @@ export interface VoiceWebGatewayOptions {
   readonly config: VoiceConfig;
   readonly logger: Logger;
   readonly sidecarUrl: string;
+  /** When set, TTS PCM is forwarded to the dashboard instead of ffplay. */
+  readonly remoteAudio?: RemoteAudioPlayback;
   /** Optional world model for /health + dashboard scene visibility. */
   readonly visionSceneStore?: IVisionSceneStore;
   /** Vision inference sidecar for live preview frames (capture only). */
   readonly visionSidecarUrl?: string;
   readonly visionCameraDevice?: number;
+  /** Start/stop the continuous camera preview + scene loop. */
+  readonly visionStream?: {
+    readonly available: boolean;
+    isActive(): boolean;
+    start(): void;
+    stop(): Promise<void>;
+  };
+  /** Per-user provider preferences (API keys, model choices). */
+  readonly userSettings?: UserSettingsStore;
 }
 
 export interface VoiceWebGateway {
@@ -164,7 +179,9 @@ export function createVoiceWebGateway(
     text: string,
     languageHint: LanguageCode | "auto" = "auto",
   ): Promise<{ correlationId: string; reply: string; language: LanguageCode }> => {
-    const language = detectLanguage(text, languageHint);
+    const mode =
+      languageHint === "auto" ? options.config.languageMode : languageHint;
+    const language = detectTextLanguage(text, mode);
     const correlationId = crypto.randomUUID();
     const reply = await options.voice.submitText(text, language, correlationId);
     return { correlationId, reply, language };
@@ -231,6 +248,9 @@ export function createVoiceWebGateway(
             break;
           case "ptt_stop":
             options.voice.setBrowserCaptureActive(false);
+            // Force-end VAD capture so releasing the mic always starts a turn
+            // (otherwise silence never arrives and the utterance vanishes).
+            await options.voice.finalizeCapture();
             break;
           default: {
             const _exhaustive: never = message.action;
@@ -259,6 +279,32 @@ export function createVoiceWebGateway(
         });
       });
 
+      options.remoteAudio?.setListener((event) => {
+        switch (event.type) {
+          case "start":
+            broadcast({
+              type: "voice.audio_start",
+              sampleRateHz: event.sampleRateHz,
+              channels: event.channels,
+            });
+            break;
+          case "chunk":
+            broadcast({
+              type: "voice.audio_pcm",
+              data: Buffer.from(event.pcm).toString("base64"),
+            });
+            break;
+          case "stop":
+            broadcast({ type: "voice.audio_stop", reason: event.reason });
+            break;
+          default: {
+            const _exhaustive: never = event;
+            void _exhaustive;
+            break;
+          }
+        }
+      });
+
       for (const eventType of FORWARDED_EVENTS) {
         const unsub = options.bus.subscribe(eventType, (event: AriaEvent) => {
           broadcast({ type: event.type, event });
@@ -281,24 +327,66 @@ export function createVoiceWebGateway(
             snapshot: options.voice.snapshot(),
             audioSourceMode: options.config.audioSourceMode,
             sidecarUrl: options.sidecarUrl,
-            vision: scene
-              ? {
-                  objectCount: scene.objects.length,
-                  labels: summarizeLabels(scene.objects),
-                  frameId: scene.frameId,
-                  timestamp: scene.timestamp,
-                  description: scene.description,
-                }
-              : null,
+            vision: {
+              available: options.visionStream?.available ?? false,
+              streaming: options.visionStream?.isActive() ?? false,
+              objectCount: scene?.objects.length ?? 0,
+              labels: scene ? summarizeLabels(scene.objects) : [],
+              frameId: scene?.frameId,
+              timestamp: scene?.timestamp,
+              description: scene?.description,
+            },
           });
+          return;
+        }
+
+        if (req.method === "GET" && url.pathname === "/api/vision/stream") {
+          sendJson(res, 200, {
+            available: options.visionStream?.available ?? false,
+            streaming: options.visionStream?.isActive() ?? false,
+          });
+          return;
+        }
+
+        if (req.method === "POST" && url.pathname === "/api/vision/stream") {
+          if (!options.visionStream?.available) {
+            sendJson(res, 409, {
+              error: "Vision is disabled (ARIA_VISION_ENABLED=false)",
+              available: false,
+              streaming: false,
+            });
+            return;
+          }
+          try {
+            const body = JSON.parse((await readBody(req)) || "{}") as {
+              streaming?: boolean;
+            };
+            if (body.streaming === true) {
+              options.visionStream.start();
+            } else if (body.streaming === false) {
+              await options.visionStream.stop();
+            } else {
+              sendJson(res, 400, { error: "Body must include streaming: true|false" });
+              return;
+            }
+            sendJson(res, 200, {
+              available: true,
+              streaming: options.visionStream.isActive(),
+            });
+          } catch (error: unknown) {
+            sendJson(res, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
           return;
         }
 
         if (req.method === "GET" && url.pathname === "/api/vision/frame") {
           const wantLive = url.searchParams.get("live") !== "0";
           const scene = options.visionSceneStore?.getLatest();
+          const streaming = options.visionStream?.isActive() ?? false;
 
-          if (wantLive && options.visionSidecarUrl) {
+          if (wantLive && streaming && options.visionSidecarUrl) {
             const live = await fetchLivePreviewFrame(
               options.visionSidecarUrl,
               options.visionCameraDevice ?? 0,
@@ -340,6 +428,48 @@ export function createVoiceWebGateway(
             correlationId: scene.correlationId,
             hasFrame: Boolean(options.visionSceneStore?.getLatestFrame()?.byteLength),
           });
+          return;
+        }
+
+        if (req.method === "GET" && url.pathname === "/api/settings/providers") {
+          if (!options.userSettings) {
+            sendJson(res, 503, { error: "User settings unavailable" });
+            return;
+          }
+          sendJson(res, 200, options.userSettings.snapshot());
+          return;
+        }
+
+        if (
+          (req.method === "PUT" || req.method === "PATCH") &&
+          url.pathname === "/api/settings/providers"
+        ) {
+          if (!options.userSettings) {
+            sendJson(res, 503, { error: "User settings unavailable" });
+            return;
+          }
+          try {
+            const body = JSON.parse(await readBody(req)) as ProviderSettings;
+            const parsed = ProviderSettingsPatchSchema.parse(body);
+            const {
+              clearOpenrouterApiKey,
+              clearGeminiApiKey,
+              ...settingsPatch
+            } = parsed;
+            await options.userSettings.save(settingsPatch, {
+              clearOpenrouterApiKey,
+              clearGeminiApiKey,
+            });
+            sendJson(res, 200, {
+              ...options.userSettings.snapshot(),
+              message:
+                "Provider settings saved. Restart the voice web gateway to apply.",
+            });
+          } catch (error: unknown) {
+            sendJson(res, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
           return;
         }
 

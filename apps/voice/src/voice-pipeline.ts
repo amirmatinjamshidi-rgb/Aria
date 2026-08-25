@@ -1,6 +1,7 @@
 import {
   AriaEventType,
   createUserUtterance,
+  type AssistantDeltaEvent,
   type AssistantReplyEvent,
   type IAudioPlayback,
   type IAudioSource,
@@ -9,6 +10,7 @@ import {
   type ITTSProvider,
   type IVoiceActivityDetector,
   type LanguageCode,
+  type PcmAudioStream,
   type VoicePipelineSnapshot,
   type VoicePipelineState,
   type VoiceTurnMetrics,
@@ -20,6 +22,9 @@ import {
   sleepMs,
 } from "./audio-amplitude.js";
 import type { VoiceConfig } from "./config.js";
+import { resolveSttLanguageHint } from "./language.js";
+import { SentenceMatcher } from "./sentence-matcher.js";
+import { openSpeechStream, SentenceQueue } from "./streaming-speech.js";
 import { VoiceStateMachine } from "./voice-state-machine.js";
 
 export type AudioChunkOrigin = "system" | "browser";
@@ -34,6 +39,46 @@ interface ActiveTurn {
   readonly vadMs: number;
 }
 
+interface PendingVoiceTurn {
+  readonly kind: "voice";
+  readonly pcm: Uint8Array;
+  readonly speechDurationMs: number;
+  readonly vadMs: number;
+}
+
+interface PendingTextTurn {
+  readonly kind: "text";
+  readonly text: string;
+  readonly language: LanguageCode;
+  readonly correlationId: string;
+  readonly resolve: (reply: string) => void;
+  readonly reject: (error: Error) => void;
+}
+
+type PendingTurn = PendingVoiceTurn | PendingTextTurn;
+
+interface TurnDurations {
+  sttMs: number;
+  agentMs: number;
+  ttsMs: number;
+  playbackStartMs: number;
+}
+
+/** Live sentence feed for one turn, backed by `conversation.assistant_delta`. */
+interface SentenceFeed {
+  readonly sentences: SentenceQueue;
+  /** Flush the trailing clause and stop waiting (the turn's reply has landed). */
+  close(language?: LanguageCode): void;
+  dispose(): void;
+}
+
+/**
+ * Continuous voice pipeline with safe turn handling:
+ * - Barge-in only while Aria is *speaking* (interrupt TTS).
+ * - New speech during thinking/transcribing is *queued*, so the previous
+ *   answer is not cancelled / vanished.
+ * - Push-to-talk stop finalizes the current capture immediately.
+ */
 export class VoicePipeline {
   private readonly machine = new VoiceStateMachine();
   private readonly captureController = new AbortController();
@@ -44,6 +89,8 @@ export class VoicePipeline {
   private utteranceVadMs = 0;
   private capturingSpeech = false;
   private activeTurn?: ActiveTurn;
+  /** Turns captured while a non-speaking turn is active — FIFO drain after finish. */
+  private readonly pendingTurns: PendingTurn[] = [];
   private browserCaptureActive = false;
   private amplitudeListener?: AmplitudeListener;
 
@@ -83,6 +130,24 @@ export class VoicePipeline {
     this.browserCaptureActive = active;
   }
 
+  /**
+   * Force-end the current speech capture (push-to-talk release).
+   * Without this, releasing the mic stops PCM and VAD never sees silence,
+   * so the utterance never starts and appears to "vanish".
+   */
+  async finalizeCapture(): Promise<void> {
+    if (!this.capturingSpeech) {
+      return;
+    }
+    // Brief drain so in-flight browser PCM chunks land before PTT release.
+    try {
+      await sleepMs(48);
+    } catch {
+      // ignore
+    }
+    await this.endSpeechCapture();
+  }
+
   async start(): Promise<void> {
     await this.vad.reset();
     await this.transition("listening");
@@ -112,6 +177,7 @@ export class VoicePipeline {
     await this.transition("stopping");
     this.captureController.abort();
     await this.audioSource.stop();
+    this.clearPendingTurns(new Error("Voice pipeline stopped"));
     await this.interruptActiveTurn(reason);
     await this.vad.reset();
     this.emitAmplitude(0);
@@ -122,6 +188,9 @@ export class VoicePipeline {
   async interrupt(
     reason: "barge_in" | "stop" | "shutdown" = "stop",
   ): Promise<void> {
+    this.clearPendingTurns(
+      new Error(reason === "barge_in" ? "Interrupted" : "Stopped"),
+    );
     await this.interruptActiveTurn(reason);
     if (this.machine.state !== "idle" && this.machine.state !== "stopping") {
       await this.transition("listening");
@@ -145,7 +214,24 @@ export class VoicePipeline {
       throw new Error("Voice pipeline is not running");
     }
 
-    if (this.activeTurn) {
+    if (
+      this.activeTurn &&
+      (this.machine.state === "thinking" ||
+        this.machine.state === "transcribing")
+    ) {
+      return new Promise<string>((resolve, reject) => {
+        this.enqueuePending({
+          kind: "text",
+          text: trimmed,
+          language,
+          correlationId: correlationId ?? crypto.randomUUID(),
+          resolve,
+          reject,
+        });
+      });
+    }
+
+    if (this.activeTurn && this.machine.state === "speaking") {
       await this.interruptActiveTurn("barge_in");
     }
 
@@ -203,21 +289,7 @@ export class VoicePipeline {
     this.utteranceVadMs += performance.now() - vadStartedAt;
 
     if (result.speechStarted && !this.capturingSpeech) {
-      if (this.activeTurn) {
-        await this.interruptActiveTurn("barge_in");
-      }
-      this.capturingSpeech = true;
-      this.speechStartedAt = performance.now();
-      this.pendingCorrelationId = crypto.randomUUID();
-      this.speechChunks = this.preRoll.map((frame) => Uint8Array.from(frame));
-      this.preRoll.length = 0;
-      await this.transition("listening");
-
-      await this.bus.publish({
-        type: AriaEventType.VoiceSpeechStarted,
-        correlationId: this.pendingCorrelationId,
-        timestamp: new Date().toISOString(),
-      });
+      await this.beginSpeechCapture();
     }
 
     const speechBytes = this.speechChunks.reduce(
@@ -231,27 +303,100 @@ export class VoicePipeline {
       this.capturingSpeech &&
       (result.speechEnded || speechDurationMs >= this.config.maxUtteranceMs)
     ) {
-      const pcm = this.concatFrames(this.speechChunks);
-      const turn: ActiveTurn = {
-        correlationId: this.pendingCorrelationId ?? crypto.randomUUID(),
-        controller: new AbortController(),
-        speechDurationMs,
-        speechEndedAt: performance.now(),
-        vadMs: this.utteranceVadMs,
-      };
-      this.activeTurn = turn;
-      this.capturingSpeech = false;
-      this.speechChunks = [];
-      this.speechStartedAt = 0;
-      this.pendingCorrelationId = undefined;
-      this.utteranceVadMs = 0;
-      void this.runTurn(turn, pcm).catch((error: unknown) => {
-        this.logger.error("voice turn failed", {
-          correlationId: turn.correlationId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+      await this.endSpeechCapture();
     }
+  }
+
+  private async beginSpeechCapture(): Promise<void> {
+    // Only barge-in while Aria is speaking. During thinking/transcribing,
+    // keep the active turn and queue the new utterance instead.
+    if (this.activeTurn && this.machine.state === "speaking") {
+      await this.interruptActiveTurn("barge_in");
+    }
+
+    this.capturingSpeech = true;
+    this.speechStartedAt = performance.now();
+    this.pendingCorrelationId = crypto.randomUUID();
+    this.speechChunks = this.preRoll.map((frame) => Uint8Array.from(frame));
+    this.preRoll.length = 0;
+
+    if (!this.activeTurn || this.machine.state === "speaking") {
+      await this.transition("listening");
+    }
+
+    await this.bus.publish({
+      type: AriaEventType.VoiceSpeechStarted,
+      correlationId: this.pendingCorrelationId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  private async endSpeechCapture(): Promise<void> {
+    if (!this.capturingSpeech) {
+      return;
+    }
+
+    const pcm = this.concatFrames(this.speechChunks);
+    const speechBytes = pcm.byteLength;
+    const speechDurationMs =
+      (speechBytes / (this.audioSource.format.sampleRateHz * 2)) * 1000;
+    const vadMs = this.utteranceVadMs;
+
+    this.capturingSpeech = false;
+    this.speechChunks = [];
+    this.speechStartedAt = 0;
+    this.utteranceVadMs = 0;
+    this.pendingCorrelationId = undefined;
+
+    if (speechBytes < this.audioSource.format.sampleRateHz * 2 * 0.05) {
+      // Drop near-empty captures (< ~50ms — click noise / accidental PTT).
+      this.logger.debug("dropping empty/short speech capture", {
+        speechDurationMs,
+      });
+      return;
+    }
+
+    // Busy with a non-speaking turn → queue; do not cancel the previous answer.
+    if (
+      this.activeTurn &&
+      (this.machine.state === "thinking" ||
+        this.machine.state === "transcribing")
+    ) {
+      this.enqueuePending({ kind: "voice", pcm, speechDurationMs, vadMs });
+      this.logger.info("queued utterance until current turn finishes", {
+        activeCorrelationId: this.activeTurn.correlationId,
+        speechDurationMs,
+        queueDepth: this.pendingTurns.length,
+      });
+      return;
+    }
+
+    if (this.activeTurn && this.machine.state === "speaking") {
+      await this.interruptActiveTurn("barge_in");
+    }
+
+    this.startVoiceTurn(pcm, speechDurationMs, vadMs);
+  }
+
+  private startVoiceTurn(
+    pcm: Uint8Array,
+    speechDurationMs: number,
+    vadMs: number,
+  ): void {
+    const turn: ActiveTurn = {
+      correlationId: crypto.randomUUID(),
+      controller: new AbortController(),
+      speechDurationMs,
+      speechEndedAt: performance.now(),
+      vadMs,
+    };
+    this.activeTurn = turn;
+    void this.runTurn(turn, pcm).catch((error: unknown) => {
+      this.logger.error("voice turn failed", {
+        correlationId: turn.correlationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
   private shouldAcceptOrigin(origin: AudioChunkOrigin): boolean {
@@ -288,48 +433,15 @@ export class VoicePipeline {
 
     try {
       await this.transitionIfActive(turn, "thinking");
-      const startedAgent = performance.now();
-      const replyPromise = this.waitForReply(turn);
-      void this.bus
-        .publish(createUserUtterance(text, language, turn.correlationId))
-        .catch((error: unknown) => {
-          this.logger.error("failed to publish text utterance", {
-            correlationId: turn.correlationId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      const reply = await replyPromise;
-      durations.agentMs = performance.now() - startedAgent;
-
-      if (!this.isActive(turn)) {
-        interrupted = true;
-        await this.finishTurn(turn, durations, interrupted);
-        return reply.text;
-      }
-
-      const startedTts = performance.now();
-      // #region agent log
-      fetch('http://127.0.0.1:7428/ingest/11d91261-a0f9-451d-8c69-0c07ca2c5204',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8aa307'},body:JSON.stringify({sessionId:'8aa307',hypothesisId:'C',location:'voice-pipeline.ts:runTextTurn',message:'text turn before TTS',data:{correlationId:turn.correlationId,replyLen:reply.text.length,language:reply.language,agentMs:durations.agentMs},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-      const speech = await this.tts.synthesize(reply.text, {
-        language: reply.language,
-        signal: turn.controller.signal,
-      });
-      durations.ttsMs = performance.now() - startedTts;
-
-      await this.transitionIfActive(turn, "speaking");
-      durations.playbackStartMs = performance.now() - turn.speechEndedAt;
-      await this.playWithAmplitude(
-        turn,
-        speech.audio,
-        speech.sampleRateHz,
+      const reply = await this.answerAndSpeak(turn, durations, () =>
+        this.bus.publish(
+          createUserUtterance(text, language, turn.correlationId),
+        ),
       );
+      interrupted = !this.isActive(turn);
       await this.finishTurn(turn, durations, interrupted);
       return reply.text;
     } catch (error: unknown) {
-      // #region agent log
-      fetch('http://127.0.0.1:7428/ingest/11d91261-a0f9-451d-8c69-0c07ca2c5204',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8aa307'},body:JSON.stringify({sessionId:'8aa307',hypothesisId:'C',location:'voice-pipeline.ts:runTextTurn',message:'text turn failed',data:{correlationId:turn.correlationId,message:error instanceof Error ? error.message : String(error),state:this.machine.state},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       if (turn.controller.signal.aborted) {
         interrupted = true;
         await this.finishTurn(turn, durations, interrupted);
@@ -356,7 +468,7 @@ export class VoicePipeline {
       await this.transitionIfActive(turn, "transcribing");
       const startedStt = performance.now();
       const transcription = await this.stt.transcribe(pcm, {
-        languageHint: "auto",
+        languageHint: resolveSttLanguageHint(this.config.languageMode),
         sampleRateHz: this.audioSource.format.sampleRateHz,
         beamSize: this.config.sttBeamSize,
         signal: turn.controller.signal,
@@ -376,45 +488,16 @@ export class VoicePipeline {
       });
 
       await this.transitionIfActive(turn, "thinking");
-      const startedAgent = performance.now();
-      const replyPromise = this.waitForReply(turn);
-      void this.bus
-        .publish(
+      await this.answerAndSpeak(turn, durations, () =>
+        this.bus.publish(
           createUserUtterance(
             transcription.text.trim(),
             transcription.language,
             turn.correlationId,
           ),
-        )
-        .catch((error: unknown) => {
-          this.logger.error("failed to publish voice utterance", {
-            correlationId: turn.correlationId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      const reply = await replyPromise;
-      durations.agentMs = performance.now() - startedAgent;
-
-      if (!this.isActive(turn)) {
-        interrupted = true;
-        await this.finishTurn(turn, durations, interrupted);
-        return;
-      }
-
-      const startedTts = performance.now();
-      const speech = await this.tts.synthesize(reply.text, {
-        language: reply.language,
-        signal: turn.controller.signal,
-      });
-      durations.ttsMs = performance.now() - startedTts;
-
-      await this.transitionIfActive(turn, "speaking");
-      durations.playbackStartMs = performance.now() - turn.speechEndedAt;
-      await this.playWithAmplitude(
-        turn,
-        speech.audio,
-        speech.sampleRateHz,
+        ),
       );
+      interrupted = !this.isActive(turn);
       await this.finishTurn(turn, durations, interrupted);
     } catch (error: unknown) {
       if (turn.controller.signal.aborted) {
@@ -428,6 +511,258 @@ export class VoicePipeline {
       }
       throw error;
     }
+  }
+
+  /**
+   * Publish the utterance, then speak the answer.
+   *
+   * Prefers the streaming path: sentences are pulled off
+   * `conversation.assistant_delta` and synthesized as they complete, so the
+   * first sentence plays while the brain is still generating. Falls back to
+   * buffered synthesis of the whole reply when the brain sends no deltas or the
+   * TTS/playback adapters cannot stream.
+   */
+  private async answerAndSpeak(
+    turn: ActiveTurn,
+    durations: TurnDurations,
+    publishUtterance: () => Promise<void>,
+  ): Promise<AssistantReplyEvent> {
+    const startedAgent = performance.now();
+    const feed = this.openSentenceFeed(turn);
+    const replyPromise = this.waitForReply(turn).then((reply) => {
+      durations.agentMs = performance.now() - startedAgent;
+      // Flush any trailing clause the matcher was still holding, then release
+      // the consumer. Deltas normally already did this via `done`; this is the
+      // safety net when the brain published a reply without a done delta.
+      feed?.close(reply.language);
+      return reply;
+    });
+
+    void publishUtterance().catch((error: unknown) => {
+      this.logger.error("failed to publish utterance", {
+        correlationId: turn.correlationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    try {
+      if (feed) {
+        try {
+          const spoken = await this.speakStreamed(turn, feed, durations);
+          if (spoken) {
+            return await replyPromise;
+          }
+          this.logger.debug("no assistant deltas — using buffered synthesis", {
+            correlationId: turn.correlationId,
+          });
+        } catch (error: unknown) {
+          this.logger.warn("streaming speech failed — falling back to buffered TTS", {
+            correlationId: turn.correlationId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      const reply = await replyPromise;
+      if (this.isActive(turn)) {
+        await this.speakBuffered(turn, reply, durations);
+      }
+      return reply;
+    } finally {
+      feed?.dispose();
+    }
+  }
+
+  /** Returns false when the delta stream yielded nothing to speak. */
+  private async speakStreamed(
+    turn: ActiveTurn,
+    feed: SentenceFeed,
+    durations: TurnDurations,
+  ): Promise<boolean> {
+    const startedTts = performance.now();
+    const firstAudio = new AbortController();
+    const onTurnAbort = (): void => firstAudio.abort();
+    turn.controller.signal.addEventListener("abort", onTurnAbort, { once: true });
+    const timeout = setTimeout(
+      () => firstAudio.abort(),
+      this.config.streamingFirstAudioTimeoutMs,
+    );
+
+    let stream: PcmAudioStream | undefined;
+    try {
+      stream = await openSpeechStream({
+        tts: this.tts,
+        sentences: feed.sentences,
+        signal: firstAudio.signal,
+        onSentence: (sentence) => {
+          this.logger.debug("speaking sentence", {
+            correlationId: turn.correlationId,
+            chars: sentence.text.length,
+          });
+        },
+        onWarning: (message) => {
+          this.logger.warn(message, { correlationId: turn.correlationId });
+        },
+      });
+    } finally {
+      clearTimeout(timeout);
+      turn.controller.signal.removeEventListener("abort", onTurnAbort);
+    }
+
+    if (!stream) {
+      return false;
+    }
+    durations.ttsMs = performance.now() - startedTts;
+
+    await this.transitionIfActive(turn, "speaking");
+    durations.playbackStartMs = performance.now() - turn.speechEndedAt;
+    await this.playStreamWithAmplitude(turn, stream);
+    return true;
+  }
+
+  private async speakBuffered(
+    turn: ActiveTurn,
+    reply: AssistantReplyEvent,
+    durations: TurnDurations,
+  ): Promise<void> {
+    const startedTts = performance.now();
+    const speech = await this.tts.synthesize(reply.text, {
+      language: reply.language,
+      signal: turn.controller.signal,
+    });
+    durations.ttsMs = performance.now() - startedTts;
+
+    await this.transitionIfActive(turn, "speaking");
+    durations.playbackStartMs = performance.now() - turn.speechEndedAt;
+    await this.playWithAmplitude(turn, speech.audio, speech.sampleRateHz);
+  }
+
+  /**
+   * Subscribe to this turn's token deltas and segment them into sentences.
+   * Returns undefined when streaming speech is unavailable.
+   */
+  private openSentenceFeed(turn: ActiveTurn): SentenceFeed | undefined {
+    if (
+      !this.config.streamingSpeech ||
+      typeof this.tts.synthesizeStream !== "function" ||
+      typeof this.playback.playStream !== "function"
+    ) {
+      return undefined;
+    }
+
+    const matcher = new SentenceMatcher({
+      maxChars: this.config.sentenceMaxChars,
+    });
+    const sentences = new SentenceQueue();
+    let lastLanguage: LanguageCode = "en";
+
+    const unsubscribe = this.bus.subscribe(
+      AriaEventType.ConversationAssistantDelta,
+      (event) => {
+        const delta = event as AssistantDeltaEvent;
+        if (delta.correlationId !== turn.correlationId) {
+          return;
+        }
+        lastLanguage = delta.language;
+        for (const text of matcher.push(delta.delta)) {
+          sentences.push({ text, language: delta.language });
+        }
+        if (delta.done) {
+          for (const text of matcher.flush()) {
+            sentences.push({ text, language: delta.language });
+          }
+          sentences.close();
+        }
+      },
+    );
+
+    const onAbort = (): void => {
+      sentences.fail(new DOMException("Voice turn interrupted", "AbortError"));
+    };
+    turn.controller.signal.addEventListener("abort", onAbort, { once: true });
+
+    const flushAndClose = (language?: LanguageCode): void => {
+      const voice = language ?? lastLanguage;
+      for (const text of matcher.flush()) {
+        sentences.push({ text, language: voice });
+      }
+      sentences.close();
+    };
+
+    return {
+      sentences,
+      close: flushAndClose,
+      dispose: () => {
+        unsubscribe();
+        turn.controller.signal.removeEventListener("abort", onAbort);
+        flushAndClose();
+      },
+    };
+  }
+
+  /**
+   * Play a live PCM stream while driving the amplitude meter.
+   *
+   * Levels are computed as chunks pass through and then emitted on a real-time
+   * timer: chunks are written to the sink faster than playback consumes them, so
+   * emitting per chunk would run the meter ahead of the audio.
+   */
+  private async playStreamWithAmplitude(
+    turn: ActiveTurn,
+    stream: PcmAudioStream,
+  ): Promise<void> {
+    const playStream = this.playback.playStream;
+    if (!playStream) {
+      throw new Error("Audio playback adapter does not support streaming");
+    }
+
+    const windowMs = 32;
+    const levels: number[] = [];
+    let drained = false;
+
+    const tap = async function* (
+      source: AsyncIterable<Uint8Array>,
+    ): AsyncGenerator<Uint8Array> {
+      try {
+        for await (const chunk of source) {
+          levels.push(
+            ...extractAmplitudeEnvelope(chunk, stream.sampleRateHz, windowMs),
+          );
+          yield chunk;
+        }
+      } finally {
+        drained = true;
+      }
+    };
+
+    const playPromise = playStream.call(
+      this.playback,
+      {
+        sampleRateHz: stream.sampleRateHz,
+        channels: stream.channels,
+        chunks: tap(stream.chunks),
+      },
+      turn.controller.signal,
+    );
+
+    const emitLoop = async (): Promise<void> => {
+      try {
+        while (!turn.controller.signal.aborted && this.isActive(turn)) {
+          const level = levels.shift();
+          if (level === undefined && drained) {
+            break;
+          }
+          this.emitAmplitude(level ?? 0);
+          await sleepMs(windowMs, turn.controller.signal);
+        }
+      } catch {
+        // aborted during sleep
+      } finally {
+        this.emitAmplitude(0);
+      }
+    };
+
+    await Promise.all([playPromise, emitLoop()]);
   }
 
   private async playWithAmplitude(
@@ -550,6 +885,67 @@ export class VoicePipeline {
       this.activeTurn = undefined;
       await this.transition("listening");
     }
+
+    this.drainNextPending();
+  }
+
+  private enqueuePending(turn: PendingTurn): void {
+    const max = this.config.maxPendingTurns;
+    while (this.pendingTurns.length >= max) {
+      const dropped = this.pendingTurns.shift();
+      if (dropped?.kind === "text") {
+        dropped.reject(new Error("Turn queue full — dropped oldest request"));
+      }
+      this.logger.warn("dropped oldest queued turn (queue full)", {
+        maxPendingTurns: max,
+      });
+    }
+    this.pendingTurns.push(turn);
+  }
+
+  private clearPendingTurns(error?: Error): void {
+    for (const pending of this.pendingTurns.splice(0)) {
+      if (pending.kind === "text") {
+        pending.reject(error ?? new Error("Voice turn queue cleared"));
+      }
+    }
+  }
+
+  private drainNextPending(): void {
+    if (this.activeTurn || this.machine.state !== "listening") {
+      return;
+    }
+    const next = this.pendingTurns.shift();
+    if (!next) {
+      return;
+    }
+
+    if (next.kind === "voice") {
+      this.logger.info("starting queued voice utterance", {
+        speechDurationMs: next.speechDurationMs,
+        queueRemaining: this.pendingTurns.length,
+      });
+      this.startVoiceTurn(next.pcm, next.speechDurationMs, next.vadMs);
+      return;
+    }
+
+    const turn: ActiveTurn = {
+      correlationId: next.correlationId,
+      controller: new AbortController(),
+      speechDurationMs: 0,
+      speechEndedAt: performance.now(),
+      vadMs: 0,
+    };
+    this.activeTurn = turn;
+    this.logger.info("starting queued text turn", {
+      correlationId: next.correlationId,
+      queueRemaining: this.pendingTurns.length,
+    });
+    void this.runTextTurn(turn, next.text, next.language)
+      .then(next.resolve)
+      .catch((error: unknown) => {
+        next.reject(error instanceof Error ? error : new Error(String(error)));
+      });
   }
 
   private async transitionIfActive(
