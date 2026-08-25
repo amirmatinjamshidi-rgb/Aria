@@ -1,12 +1,10 @@
 import type { AriaEvent, AriaEventTypeName, EventHandler } from "./events.js";
 import type {  PluginMetadata } from "./plugin-metadata.js";
 import type {
-  ChatMessage,
   AudioFormat,
   DetectedObject,
   Goal,
   LanguageCode,
-  LlmCompletion,
   MemoryKind,
   MemoryRecord,
   SkillStatus,
@@ -18,30 +16,9 @@ import type {
 export type { PluginFactory, PluginMetadata } from "./plugin-metadata.js";
 export type { ToolDefinition } from "./schemas.js";
 
+export * from "./ports/llm.js";
 export * from "./ports/tools.js";
 export * from "./ports/search.js";
-
-export interface LlmGenerateOptions {
-  readonly systemPrompt?: string;
-  readonly temperature?: number;
-  readonly maxTokens?: number;
-  readonly tools?: readonly ToolDefinition[];
-  readonly languageHint?: LanguageCode;
-  readonly signal?: AbortSignal;
-}
-
-/**
- * Port: Large Language Model provider.
- * Implementations: mock, echo, ollama/qwen, openrouter, cloud adapters.
- */
-export interface ILLMProvider {
-  readonly metadata: PluginMetadata;
-  generate(
-    messages: readonly ChatMessage[],
-    options?: LlmGenerateOptions,
-  ): Promise<LlmCompletion>;
-  dispose?(): Promise<void>;
-}
 
 /**
  * Port: Personality / system-prompt service.
@@ -135,6 +112,16 @@ export interface TtsSynthesizeOptions {
 }
 
 /**
+ * A raw PCM stream whose format is known before the first chunk arrives, so
+ * playback can spin up its sink while synthesis is still running.
+ */
+export interface PcmAudioStream {
+  readonly sampleRateHz: number;
+  readonly channels: 1;
+  readonly chunks: AsyncIterable<Uint8Array>;
+}
+
+/**
  * Port: Text-to-Speech provider (Piper, etc.).
  */
 export interface ITTSProvider {
@@ -143,6 +130,15 @@ export interface ITTSProvider {
     text: string,
     options: TtsSynthesizeOptions,
   ): Promise<{ audio: Uint8Array; sampleRateHz: number }>;
+  /**
+   * Chunked synthesis for sentence-level pipelining. Resolves as soon as the
+   * format is known; audio arrives incrementally on `chunks`.
+   * Absent on adapters that can only return a whole utterance.
+   */
+  synthesizeStream?(
+    text: string,
+    options: TtsSynthesizeOptions,
+  ): Promise<PcmAudioStream>;
   dispose?(): Promise<void>;
 }
 
@@ -164,6 +160,12 @@ export interface IAudioPlayback {
     format: Pick<AudioFormat, "sampleRateHz" | "channels">,
     signal: AbortSignal,
   ): Promise<void>;
+  /**
+   * Play PCM as it arrives, keeping one sink open for the whole stream so
+   * consecutive sentences do not restart the output device.
+   * Absent on adapters that can only play a fully buffered utterance.
+   */
+  playStream?(stream: PcmAudioStream, signal: AbortSignal): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -215,6 +217,8 @@ export interface IVisionProvider {
     image: Uint8Array,
     options?: VisionAnalyzeOptions,
   ): Promise<VisionAnalyzeResult>;
+  /** Grab a live camera frame when the adapter owns capture. */
+  captureFrame?(): Promise<{ image: Uint8Array; frameId?: string }>;
   dispose?(): Promise<void>;
 }
 

@@ -14,6 +14,10 @@ This directory holds ADRs for Aria. Every significant architectural choice gets 
 | [0008](0008-web-interaction-gateway.md) | Web interaction gateway | Accepted |
 | [0009](0009-web-search-fetch-tools.md) | Web search and page fetch tools | Accepted |
 | [0010](0010-tool-platform.md) | Tool Platform (registry, executor, search) | Accepted |
+| [0011](0011-dynamic-providers.md) | Dynamic per-user providers and API keys | Accepted |
+| [0012](0012-voice-turn-queue.md) | Voice turn queue + PTT finalize | Accepted |
+| [0013](0013-gemini-rate-limit.md) | Gemini vision rate limiting | Accepted |
+| [0014](0014-sentence-streaming.md) | Sentence-streaming voice pipeline | Accepted |
 
 ## Template
 

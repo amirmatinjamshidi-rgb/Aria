@@ -1,4 +1,4 @@
-import type { IAudioSource, IMessageBus } from "@aria/contracts";
+import type { IAudioPlayback, IAudioSource, IMessageBus } from "@aria/contracts";
 import type { Logger } from "@aria/core";
 import { FasterWhisperProvider } from "./adapters/faster-whisper-stt.js";
 import { FallbackAudioSource } from "./adapters/fallback-audio-source.js";
@@ -9,12 +9,15 @@ import { InferenceSidecarClient } from "./adapters/inference-sidecar-client.js";
 import { PiperTtsProvider } from "./adapters/piper-tts.js";
 import { SileroVadProvider } from "./adapters/silero-vad.js";
 import { loadVoiceConfig, type VoiceConfig } from "./config.js";
+import { assertPiperModelsExist } from "./model-paths.js";
 import { VoicePipeline } from "./voice-pipeline.js";
 
 export interface VoiceCompositionOptions {
   readonly bus: IMessageBus;
   readonly logger: Logger;
   readonly env?: NodeJS.ProcessEnv;
+  /** Override the default ffplay sink (web lab plays in the browser instead). */
+  readonly playback?: IAudioPlayback;
 }
 
 function createAudioSource(
@@ -57,9 +60,13 @@ export function createVoicePipeline(
 ): VoicePipeline {
   const config = loadVoiceConfig(options.env);
   const logger = options.logger.child({ service: "voice" });
+  if (options.env?.["ARIA_SKIP_MODEL_CHECK"] !== "true") {
+    assertPiperModelsExist(config.piperEnglishModel, config.piperPersianModel);
+  }
   const sidecar = new InferenceSidecarClient(config.sidecarUrl);
   const source = createAudioSource(config, logger);
-  const playback = new FfplayAudioPlayback(config.ffplayExecutable);
+  const playback =
+    options.playback ?? new FfplayAudioPlayback(config.ffplayExecutable);
   const vad = new SileroVadProvider(sidecar, config);
   const stt = new FasterWhisperProvider(sidecar, config);
   const tts = new PiperTtsProvider(sidecar, config);

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
-import time
 import uuid
 from dataclasses import dataclass
 from io import BytesIO
@@ -15,7 +14,14 @@ import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
+from .frame_diff import DEFAULT_MSE_THRESHOLD, FrameDelta, FrameDiffer
+
 app = FastAPI(title="Aria Vision Inference", version="1.0.0")
+
+# Frames handed to a remote VLM: 1080p keeps small on-screen text legible while
+# q75 keeps the upload well under a megabyte.
+SNAPSHOT_MAX_HEIGHT = 1080
+SNAPSHOT_JPEG_QUALITY = 75
 
 # mock | real — mock skips heavy model loads for CI / first boot
 SIDECAR_MODE = os.environ.get("ARIA_VISION_SIDECAR_MODE", "real").strip().lower()
@@ -84,6 +90,20 @@ class PoseKeypoint(CamelModel):
 class PoseResponse(CamelModel):
     poses: list[list[PoseKeypoint]]
     frame_id: str | None = Field(default=None, alias="frameId")
+
+
+class FrameDeltaResponse(CamelModel):
+    frame_id: str = Field(alias="frameId")
+    #: True when the scene matches the previous frame closely enough to reuse
+    #: the last vision result instead of running the models again.
+    unchanged: bool
+    #: Mean squared error against the previous frame; null for the first frame.
+    mse: float | None = None
+    threshold: float
+    width: int | None = None
+    height: int | None = None
+    #: Present only when the frame changed (or `force` was set).
+    image_base64: str | None = Field(default=None, alias="imageBase64")
 
 
 @dataclass
@@ -166,6 +186,7 @@ class ModelHub:
 
 
 hub = ModelHub()
+differ = FrameDiffer()
 
 
 def _decode_image(data: bytes) -> np.ndarray:
@@ -180,6 +201,7 @@ def _encode_jpeg(
     image: np.ndarray,
     *,
     max_width: int = 640,
+    max_height: int | None = None,
     quality: int = 65,
 ) -> bytes:
     """Downscale + compress so dashboard preview stays light."""
@@ -190,6 +212,14 @@ def _encode_jpeg(
         frame = cv2.resize(
             frame,
             (max_width, max(1, int(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+    height, width = frame.shape[:2]
+    if max_height is not None and height > max_height > 0:
+        scale = max_height / float(height)
+        frame = cv2.resize(
+            frame,
+            (max(1, int(width * scale)), max_height),
             interpolation=cv2.INTER_AREA,
         )
     ok, buf = cv2.imencode(
@@ -305,6 +335,25 @@ def _open_camera(device: int) -> cv2.VideoCapture:
     for _ in range(5):
         capture.read()
     return capture
+
+
+def _read_camera_frame(device: int) -> np.ndarray:
+    """Grab one BGR frame, reopening the device once on a transient failure."""
+    with hub._lock:
+        cam = hub._camera
+        if cam.capture is None or cam.device_index != device:
+            if cam.capture is not None:
+                cam.capture.release()
+            cam.capture = _open_camera(device)
+            cam.device_index = device
+        ok, frame = cam.capture.read()
+        if not ok or frame is None:
+            cam.capture.release()
+            cam.capture = _open_camera(device)
+            ok, frame = cam.capture.read()
+        if not ok or frame is None:
+            raise RuntimeError("Camera read failed")
+        return frame
 
 
 @app.post("/v1/detect", response_model=DetectResponse, response_model_by_alias=True)
@@ -562,23 +611,9 @@ async def capture(
         )
 
     def run() -> tuple[bytes, int, int]:
-        with hub._lock:
-            cam = hub._camera
-            if cam.capture is None or cam.device_index != device:
-                if cam.capture is not None:
-                    cam.capture.release()
-                cam.capture = _open_camera(device)
-                cam.device_index = device
-            ok, frame = cam.capture.read()
-            if not ok or frame is None:
-                # Re-open once on transient failure.
-                cam.capture.release()
-                cam.capture = _open_camera(device)
-                ok, frame = cam.capture.read()
-            if not ok or frame is None:
-                raise RuntimeError("Camera read failed")
-            height, width = frame.shape[:2]
-            return _encode_jpeg(frame), width, height
+        frame = _read_camera_frame(device)
+        height, width = frame.shape[:2]
+        return _encode_jpeg(frame), width, height
 
     try:
         jpeg, width, height = await asyncio.to_thread(run)
@@ -591,3 +626,90 @@ async def capture(
         width=width,
         height=height,
     )
+
+
+@app.post(
+    "/v1/frame/delta",
+    response_model=FrameDeltaResponse,
+    response_model_by_alias=True,
+)
+async def frame_delta(
+    device: Annotated[int, Form()] = 0,
+    session_id: Annotated[str, Form()] = "aria-vision",
+    threshold: Annotated[float, Form()] = DEFAULT_MSE_THRESHOLD,
+    force: Annotated[bool, Form()] = False,
+) -> FrameDeltaResponse:
+    """Report whether the scene moved, and return a frame only when it did.
+
+    This is the gate in front of every expensive vision path: callers poll it
+    cheaply and skip Gemini / YOLO entirely while `unchanged` is true. Pass
+    `force=true` for an explicit vision tool request, which must always get a
+    frame back regardless of motion.
+
+    Image bytes are never accepted here — the Node client only sends form
+    fields, and mixing an optional `File` with `Form` is what crashed startup.
+    """
+    frame_id = str(uuid.uuid4())
+
+    if SIDECAR_MODE == "mock":
+        # Deterministic for tests: a mock camera never moves after frame one.
+        delta = differ.compare(session_id, np.zeros((480, 640, 3), np.uint8), threshold)
+        include = force or delta.changed
+        black = np.zeros((64, 64, 3), dtype=np.uint8)
+        return FrameDeltaResponse(
+            frameId=frame_id,
+            unchanged=not delta.changed,
+            mse=None if delta.first_frame else delta.mse,
+            threshold=threshold,
+            width=64 if include else None,
+            height=64 if include else None,
+            imageBase64=(
+                base64.b64encode(_encode_jpeg(black)).decode("ascii")
+                if include
+                else None
+            ),
+        )
+
+    def run() -> tuple[FrameDelta, bytes | None, int, int]:
+        frame = _read_camera_frame(device)
+        delta = differ.compare(session_id, frame, threshold)
+        height, width = frame.shape[:2]
+        if not (force or delta.changed):
+            # The caller already has an equivalent frame; sending ~200 KB of
+            # JPEG it will throw away is the thing this endpoint exists to avoid.
+            return delta, None, width, height
+        jpeg = _encode_jpeg(
+            frame,
+            max_width=0,
+            max_height=SNAPSHOT_MAX_HEIGHT,
+            quality=SNAPSHOT_JPEG_QUALITY,
+        )
+        return delta, jpeg, width, height
+
+    try:
+        delta, jpeg, width, height = await asyncio.to_thread(run)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+    return FrameDeltaResponse(
+        frameId=frame_id,
+        unchanged=not delta.changed,
+        mse=None if delta.first_frame else delta.mse,
+        threshold=threshold,
+        width=width if jpeg is not None else None,
+        height=height if jpeg is not None else None,
+        imageBase64=(
+            base64.b64encode(jpeg).decode("ascii") if jpeg is not None else None
+        ),
+    )
+
+
+@app.post("/v1/frame/delta/reset")
+async def reset_frame_delta(
+    session_id: Annotated[str, Form()] = "aria-vision",
+) -> dict[str, bool]:
+    """Drop the baseline so the next frame is reported as changed."""
+    differ.reset(session_id)
+    return {"ok": True}

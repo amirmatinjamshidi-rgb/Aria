@@ -4,16 +4,23 @@ import {
   gatewayWsUrl,
   type AriaUiState,
   type GatewayAmplitudeMessage,
+  type GatewayAudioPcmMessage,
+  type GatewayAudioStartMessage,
+  type GatewayAudioStopMessage,
   type GatewayErrorMessage,
   type GatewayHelloMessage,
   type TranscriptLine,
   type VisionDetectedObject,
   type VisionSceneView,
 } from "./types";
+import { decodeBase64Pcm } from "./browser-pcm-player";
 
 export interface AriaSessionHandlers {
   readonly onState: (state: AriaUiState) => void;
   readonly onAmplitude: (level: number) => void;
+  readonly onAudioStart?: (sampleRateHz: number) => void;
+  readonly onAudioPcm?: (pcm: Uint8Array) => void;
+  readonly onAudioStop?: (reason?: "end" | "interrupt") => void;
   readonly onTranscript: (line: TranscriptLine) => void;
   readonly onConnection: (connected: boolean) => void;
   readonly onError: (message: string) => void;
@@ -159,6 +166,21 @@ export class AriaGatewaySession {
       case "voice.amplitude": {
         const amp = message as unknown as GatewayAmplitudeMessage;
         this.handlers.onAmplitude(amp.level);
+        return;
+      }
+      case "voice.audio_start": {
+        const start = message as unknown as GatewayAudioStartMessage;
+        this.handlers.onAudioStart?.(start.sampleRateHz);
+        return;
+      }
+      case "voice.audio_pcm": {
+        const pcm = message as unknown as GatewayAudioPcmMessage;
+        this.handlers.onAudioPcm?.(decodeBase64Pcm(pcm.data));
+        return;
+      }
+      case "voice.audio_stop": {
+        const stop = message as unknown as GatewayAudioStopMessage;
+        this.handlers.onAudioStop?.(stop.reason);
         return;
       }
       case "chat_ack":

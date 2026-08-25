@@ -147,11 +147,13 @@ npm run voice:web
 npm run dashboard
 ```
 
-Ask “what do you see?” in the chat dock. Status line shows live scene labels.
-Detection uses the **system webcam** via the vision sidecar (not the browser
-camera tab permission). Get a free API key at https://aistudio.google.com/apikey.
+Click **Start video** in the dashboard, then ask “what do you see?”. Status
+line shows live scene labels. Detection uses the **system webcam** via the
+vision sidecar (not the browser camera tab permission). Get a free API key at
+https://aistudio.google.com/apikey.
 If you see `MOCK (not camera): person, cup`, restart the vision sidecar without
-`ARIA_VISION_SIDECAR_MODE=mock`. Set `ARIA_VISION_ENABLED=false` to disable the loop.
+`ARIA_VISION_SIDECAR_MODE=mock`. Set `ARIA_VISION_ENABLED=false` to hide Start
+video. The scene loop no longer starts until you click Start video.
 
 Press `Ctrl+C` for a graceful stop. Use headphones for early barge-in tests
 (no acoustic echo cancellation yet).

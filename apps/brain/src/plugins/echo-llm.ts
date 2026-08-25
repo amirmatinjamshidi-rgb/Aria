@@ -5,6 +5,7 @@ import type {
   LlmGenerateOptions,
   PluginMetadata,
 } from "@aria/contracts";
+import { iterateTextDeltas } from "./stream-utils.js";
 
 /**
  * Echo LLM — returns the user message with a light prefix.
@@ -33,5 +34,13 @@ export class EchoLlmProvider implements ILLMProvider {
       language,
       finishReason: "stop",
     };
+  }
+
+  async *generateStream(
+    messages: readonly ChatMessage[],
+    options?: LlmGenerateOptions,
+  ): AsyncGenerator<string> {
+    const completion = await this.generate(messages, options);
+    yield* iterateTextDeltas(completion.content);
   }
 }

@@ -13,9 +13,22 @@ const PREVIEW_POLL_MS = 120;
 interface VisionPreviewProps {
   readonly scene: VisionSceneView | null;
   readonly connected: boolean;
+  readonly streaming: boolean;
+  readonly available: boolean;
+  readonly busy?: boolean;
+  readonly error?: string | null;
+  readonly onToggle: () => void;
 }
 
-export function VisionPreview({ scene, connected }: VisionPreviewProps) {
+export function VisionPreview({
+  scene,
+  connected,
+  streaming,
+  available,
+  busy = false,
+  error,
+  onToggle,
+}: VisionPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const objectsRef = useRef<readonly VisionDetectedObject[]>([]);
@@ -36,10 +49,26 @@ export function VisionPreview({ scene, connected }: VisionPreviewProps) {
     }
   }, [scene]);
 
-  // Smooth live camera preview independent of analyze interval.
+  useEffect(() => {
+    if (!streaming) {
+      imageRef.current = null;
+      objectsRef.current = [];
+      drawPlaceholder(
+        canvasRef.current,
+        available
+          ? "Camera idle — start video to share the scene"
+          : "Vision disabled",
+      );
+    }
+  }, [streaming, available]);
+
+  // Smooth live camera preview only while the user has started video.
   useEffect(() => {
     if (!connected) {
       drawPlaceholder(canvasRef.current, "Connecting…");
+      return;
+    }
+    if (!streaming) {
       return;
     }
 
@@ -94,18 +123,24 @@ export function VisionPreview({ scene, connected }: VisionPreviewProps) {
       loadTokenRef.current += 1;
       inFlightRef.current = false;
     };
-  }, [connected]);
+  }, [connected, streaming]);
 
-  const title = scene?.source === "mock" ? "Vision (mock)" : "Vision";
+  const title = !streaming
+    ? "Vision"
+    : scene?.source === "mock"
+      ? "Vision (mock)"
+      : "Vision";
 
   return (
     <aside className="vision-preview" aria-label="What Aria sees">
       <div className="vision-preview-head">
         <span className="vision-preview-title">{title}</span>
         <span className="vision-preview-meta">
-          {scene
+          {streaming && scene
             ? `${scene.objects.length} object${scene.objects.length === 1 ? "" : "s"}`
-            : "—"}
+            : streaming
+              ? "live"
+              : "off"}
         </span>
       </div>
       <canvas
@@ -114,9 +149,18 @@ export function VisionPreview({ scene, connected }: VisionPreviewProps) {
         width={320}
         height={180}
       />
-      {scene?.summary ? (
+      {streaming && scene?.summary ? (
         <p className="vision-preview-caption">{scene.summary}</p>
       ) : null}
+      {error ? <p className="vision-preview-error">{error}</p> : null}
+      <button
+        type="button"
+        className={`vision-stream-toggle${streaming ? " active" : ""}`}
+        onClick={onToggle}
+        disabled={!connected || !available || busy}
+      >
+        {busy ? "Working…" : streaming ? "Stop video" : "Start video"}
+      </button>
     </aside>
   );
 }

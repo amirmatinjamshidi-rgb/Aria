@@ -65,6 +65,7 @@ describe("GeminiVisionProvider", () => {
       vlmEnabled: true,
       segmentEnabled: false,
       confidenceThreshold: 0.25,
+      geminiMinIntervalMs: 10,
     });
 
     const first = await provider.analyze(jpegStub(), { detect: true, track: true });
@@ -113,6 +114,7 @@ describe("GeminiVisionProvider", () => {
       vlmEnabled: true,
       segmentEnabled: false,
       confidenceThreshold: 0.25,
+      geminiMinIntervalMs: 10,
     });
 
     const result = await provider.analyze(jpegStub(), {
@@ -121,10 +123,112 @@ describe("GeminiVisionProvider", () => {
     });
     expect(result.description).toBe("Someone holding a cup.");
 
-    const body = JSON.parse(
-      (fetchMock.mock.calls[0]?.[1] as { body: string }).body,
-    ) as { contents: Array<{ parts: Array<{ text?: string }> }> };
+    const calls = fetchMock.mock.calls as unknown as Array<
+      [unknown, RequestInit]
+    >;
+    const body = JSON.parse(String(calls[0]?.[1]?.body ?? "{}")) as {
+      contents: Array<{ parts: Array<{ text?: string }> }>;
+    };
     const prompt = body.contents[0]?.parts.find((p) => p.text)?.text ?? "";
     expect(prompt).toMatch(/description/i);
+  });
+
+  it("backs off on HTTP 429 and can reuse last good scene", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    parts: [
+                      {
+                        text: JSON.stringify({
+                          description: "ok",
+                          objects: [
+                            {
+                              label: "cup",
+                              confidence: 0.9,
+                              box_2d: [0, 0, 100, 100],
+                            },
+                          ],
+                        }),
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          ok: false,
+          status: 429,
+          headers: new Headers({ "retry-after": "1" }),
+          json: async () => ({
+            error: { message: "Resource exhausted. Please retry in 1.2s." },
+          }),
+        };
+      }),
+    );
+
+    const provider = new GeminiVisionProvider({
+      geminiApiKey: "test-key",
+      geminiModel: "gemini-2.0-flash",
+      geminiBaseUrl: "https://generativelanguage.googleapis.com",
+      trackEnabled: false,
+      vlmEnabled: true,
+      segmentEnabled: false,
+      confidenceThreshold: 0.25,
+      geminiMinIntervalMs: 10,
+    });
+
+    const first = await provider.analyze(jpegStub(), { detect: true });
+    expect(first.objects[0]?.label).toBe("cup");
+
+    const second = await provider.analyze(jpegStub(), { detect: true });
+    expect(second.objects[0]?.label).toBe("cup");
+    expect(provider.cooldownRemainingMs()).toBeGreaterThan(0);
+  });
+
+  it("holds a token-bucket cooldown after a successful call", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: JSON.stringify({ objects: [] }) }],
+              },
+            },
+          ],
+        }),
+      })),
+    );
+
+    const provider = new GeminiVisionProvider({
+      geminiApiKey: "test-key",
+      geminiModel: "gemini-2.0-flash",
+      geminiBaseUrl: "https://generativelanguage.googleapis.com",
+      trackEnabled: false,
+      vlmEnabled: false,
+      segmentEnabled: false,
+      confidenceThreshold: 0.25,
+      geminiMinIntervalMs: 4500,
+    });
+
+    expect(provider.cooldownRemainingMs()).toBe(0);
+    await provider.analyze(jpegStub(), { detect: true });
+    expect(provider.cooldownRemainingMs()).toBeGreaterThan(4000);
   });
 });

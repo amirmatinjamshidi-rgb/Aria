@@ -12,11 +12,12 @@ FILES = {
     "en_US-lessac-medium.onnx.json": (
         f"{BASE}/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
     ),
-    "fa_IR-gyro-medium.onnx": (
-        f"{BASE}/fa/fa_IR/gyro/medium/fa_IR-gyro-medium.onnx"
+    # Official Persian voice — auto-selected when STT/brain language is fa
+    "fa_IR-ganji-medium.onnx": (
+        f"{BASE}/fa/fa_IR/ganji/medium/fa_IR-ganji-medium.onnx"
     ),
-    "fa_IR-gyro-medium.onnx.json": (
-        f"{BASE}/fa/fa_IR/gyro/medium/fa_IR-gyro-medium.onnx.json"
+    "fa_IR-ganji-medium.onnx.json": (
+        f"{BASE}/fa/fa_IR/ganji/medium/fa_IR-ganji-medium.onnx.json"
     ),
 }
 
@@ -38,6 +39,8 @@ def main() -> None:
     for filename, url in FILES.items():
         download(url, target / filename)
     print(f"Piper voices ready in {target}")
+    print("Persian default: fa_IR-ganji-medium.onnx")
+    print("English default: en_US-lessac-medium.onnx")
 
 
 if __name__ == "__main__":

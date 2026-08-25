@@ -1,0 +1,14 @@
+{
+  "name": "@aria/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Tauri 2 shell for the Aria web intelligence lab",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.0"
+  }
+}

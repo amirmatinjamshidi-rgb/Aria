@@ -52,11 +52,13 @@ npm run start -w @aria/brain
 # Interactive REPL chat (type your own questions)
 npm run chat -w @aria/brain
 
-# Web UI (neural orb) — needs voice sidecar + voice:web
+# Web UI — Windows: .\scripts\start-aria-web.ps1  |  Manual:
 npm run voice:sidecar
 npm run voice:web
 npm run dashboard
 ```
+
+See [docs/BRANCHES.md](docs/BRANCHES.md) to split changes into review branches before commit.
 
 Swap the LLM provider without touching brain code:
 
@@ -88,8 +90,15 @@ model paths, barge-in behavior, and latency metrics.
 
 | Doc | Purpose |
 |-----|---------|
+| [VISION.md](docs/VISION.md) | Humanoid north-star |
+| [USER_GUIDE.md](docs/USER_GUIDE.md) | Run the web lab |
+| [PROVIDERS.md](docs/PROVIDERS.md) | Choose models & API keys |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design & topology |
+| [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | Extend Aria safely |
 | [ROADMAP.md](docs/ROADMAP.md) | 13-phase delivery plan |
+| [DESKTOP.md](docs/DESKTOP.md) | Tauri 2 desktop shell |
+| [BRANCHES.md](docs/BRANCHES.md) | Review-only branch split |
+| [BUDGET.md](docs/BUDGET.md) | Hardware cost estimates |
 | [LEARNING.md](docs/LEARNING.md) | Skills roadmap |
 | [BUDGET.md](docs/BUDGET.md) | Cost estimates |
 | [CONTRIBUTING.md](docs/CONTRIBUTING.md) | Development rules |

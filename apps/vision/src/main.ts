@@ -32,8 +32,10 @@ async function main(): Promise<void> {
     sceneStore: visionPorts.sceneStore,
   });
 
-  // Swap the mutable ports bag so brain tools use the real provider.
+  // Swap the mutable ports bag so brain tools use the real camera + provider.
   visionPorts.provider = vision.provider;
+  visionPorts.captureFrame = () => vision.camera.capture();
+  visionPorts.isStreaming = () => vision.isStreaming();
 
   let stopping = false;
   const shutdown = async () => {

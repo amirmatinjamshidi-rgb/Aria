@@ -3,8 +3,11 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBrainContainer, resolveBrainPorts } from "@aria/brain";
+import { UserSettingsStore } from "@aria/core";
 import { createVisionRuntime } from "@aria/vision";
 import { createVoicePipeline } from "./composition-root.js";
+import { RemoteAudioPlayback } from "./adapters/remote-audio-playback.js";
+import { defaultRepoRootEnv } from "./model-paths.js";
 import { loadVoiceConfig } from "./config.js";
 import { createVoiceWebGateway } from "./gateway/web-gateway.js";
 
@@ -24,25 +27,40 @@ function loadEnvFiles(): void {
 
 async function main(): Promise<void> {
   loadEnvFiles();
+  process.env.ARIA_REPO_ROOT ??= defaultRepoRootEnv();
   // Web UI defaults: keep gateway up even if the system mic is missing.
   process.env.ARIA_AUDIO_SOURCE ??= "ffmpeg+browser";
 
-  const voiceConfig = loadVoiceConfig(process.env);
+  const userSettings = new UserSettingsStore();
+  await userSettings.load();
+  const runtimeEnv = userSettings.applyToEnv(process.env);
+  // Propagate merged provider choices to child processes / later reads.
+  Object.assign(process.env, runtimeEnv);
+
+  const voiceConfig = loadVoiceConfig(runtimeEnv);
   const { container, conversation, visionPorts } =
-    await createBrainContainer(process.env);
+    await createBrainContainer(runtimeEnv);
   const { bus, logger } = resolveBrainPorts(container);
   const stopConversation = conversation.start();
 
   const vision = createVisionRuntime({
     bus,
     logger,
-    env: process.env,
+    env: runtimeEnv,
     sceneStore: visionPorts.sceneStore,
   });
   // Shared mutable ports bag — chat tools see the live camera provider.
   visionPorts.provider = vision.provider;
+  visionPorts.captureFrame = () => vision.camera.capture();
+  visionPorts.isStreaming = () => vision.isStreaming();
 
-  const voice = createVoicePipeline({ bus, logger, env: process.env });
+  const playback = new RemoteAudioPlayback();
+  const voice = createVoicePipeline({
+    bus,
+    logger,
+    env: runtimeEnv,
+    playback,
+  });
   const gateway = createVoiceWebGateway({
     host: voiceConfig.gatewayHost,
     port: voiceConfig.gatewayPort,
@@ -55,6 +73,14 @@ async function main(): Promise<void> {
     visionSceneStore: visionPorts.sceneStore,
     visionSidecarUrl: vision.config.sidecarUrl,
     visionCameraDevice: vision.config.cameraDevice,
+    remoteAudio: playback,
+    visionStream: {
+      available: vision.config.enabled,
+      isActive: () => vision.isStreaming(),
+      start: () => vision.start(),
+      stop: () => vision.stopStreaming(),
+    },
+    userSettings,
   });
 
   let stopping = false;
@@ -72,22 +98,19 @@ async function main(): Promise<void> {
   };
 
   await gateway.start();
-  if (vision.config.enabled) {
-    vision.start();
-    logger.info("vision scene loop attached to web gateway", {
-      provider: vision.config.provider,
-      sidecarUrl: vision.config.sidecarUrl,
-    });
-  } else {
-    logger.info("vision scene loop disabled (ARIA_VISION_ENABLED=false)");
-  }
+  logger.info("vision camera idle until Start video", {
+    available: vision.config.enabled,
+    provider: vision.config.provider,
+    sidecarUrl: vision.config.sidecarUrl,
+  });
 
   logger.info("starting Aria voice runtime with web gateway", {
-    hint: "Open the dashboard and press Ctrl+C here to stop",
+    hint: "Open the dashboard, click Start video, and press Ctrl+C here to stop",
     gateway: gateway.url,
     audioSourceMode: voiceConfig.audioSourceMode,
     visionProvider: vision.config.provider,
     visionEnabled: vision.config.enabled,
+    userSettingsPath: userSettings.path,
   });
 
   // Capture runs until shutdown; FallbackAudioSource keeps us alive if ffmpeg fails.

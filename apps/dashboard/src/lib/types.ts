@@ -51,6 +51,22 @@ export interface GatewayAmplitudeMessage {
   readonly timestamp: string;
 }
 
+export interface GatewayAudioStartMessage {
+  readonly type: "voice.audio_start";
+  readonly sampleRateHz: number;
+  readonly channels: 1;
+}
+
+export interface GatewayAudioPcmMessage {
+  readonly type: "voice.audio_pcm";
+  readonly data: string;
+}
+
+export interface GatewayAudioStopMessage {
+  readonly type: "voice.audio_stop";
+  readonly reason?: "end" | "interrupt";
+}
+
 export interface GatewayChatAckMessage {
   readonly type: "chat_ack";
   readonly reply: string;
@@ -112,6 +128,47 @@ export function visionFrameUrl(options?: {
     url.searchParams.set("t", String(options.bust));
   }
   return url.toString();
+}
+
+export function visionStreamUrl(): string {
+  return `${gatewayHttpUrl()}/api/vision/stream`;
+}
+
+export interface VisionStreamState {
+  readonly available: boolean;
+  readonly streaming: boolean;
+  readonly error?: string;
+}
+
+export interface ProviderCatalogEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: "llm" | "vision" | "stt" | "tts" | "search";
+  readonly requiresApiKey: boolean;
+  readonly local: boolean;
+  readonly description?: string;
+}
+
+export interface ProviderSettingsView {
+  readonly providers: {
+    readonly llmProvider?: string;
+    readonly visionProvider?: string;
+    readonly ollamaModel?: string;
+    readonly ollamaBaseUrl?: string;
+    readonly openrouterModel?: string;
+    readonly geminiModel?: string;
+    readonly localFirst?: boolean;
+    readonly ttsPersianModel?: string;
+    readonly ttsEnglishModel?: string;
+    readonly languageMode?: "auto" | "en" | "fa";
+  };
+  readonly catalog: readonly ProviderCatalogEntry[];
+  readonly secrets: {
+    readonly openrouterApiKeySet: boolean;
+    readonly geminiApiKeySet: boolean;
+  };
+  readonly path: string;
+  readonly restartRequired: boolean;
 }
 
 export function statusLabel(state: AriaUiState): string {

@@ -7,6 +7,7 @@ import {
 export type { ToolError };
 export * from "./schemas/tools.js";
 export * from "./schemas/search.js";
+export * from "./schemas/providers.js";
 
 /** ISO language tags Aria supports in Phase 0+ */
 export const LanguageCodeSchema = z.enum(["en", "fa"]);

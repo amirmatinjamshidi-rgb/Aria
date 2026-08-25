@@ -5,6 +5,7 @@ import type {
   LlmGenerateOptions,
   PluginMetadata,
 } from "@aria/contracts";
+import { iterateTextDeltas } from "./stream-utils.js";
 
 /**
  * Deterministic mock LLM for tests and offline demos.
@@ -146,6 +147,14 @@ export class MockLlmProvider implements ILLMProvider {
       language,
       finishReason: "stop",
     };
+  }
+
+  async *generateStream(
+    messages: readonly ChatMessage[],
+    options?: LlmGenerateOptions,
+  ): AsyncGenerator<string> {
+    const completion = await this.generate(messages, options);
+    yield* iterateTextDeltas(completion.content);
   }
 
   private asksForTime(text: string): boolean {
